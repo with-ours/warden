@@ -1,0 +1,13 @@
+{
+  "skill": "sql-injection",
+  "description": "SQL injection via string concatenation",
+  "expectedBugs": [
+    {
+      "id": "sql-1",
+      "file": "db.ts",
+      "bug": "SQL injection vulnerability where user input is concatenated directly into query string without parameterization",
+      "severity": "critical",
+      "line": 8
+    }
+  ]
+}
