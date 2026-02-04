@@ -38,6 +38,8 @@ const GitHubEventPayloadSchema = z.object({
   action: z.string(),
   repository: GitHubRepoSchema,
   pull_request: GitHubPullRequestSchema.optional(),
+  /** Previous HEAD SHA (present on synchronize events) */
+  before: z.string().optional(),
 });
 
 export class EventContextError extends Error {
@@ -88,6 +90,8 @@ export async function buildEventContext(
       baseBranch: pr.base.ref,
       headBranch: pr.head.ref,
       headSha: pr.head.sha,
+      // Include previous HEAD SHA for synchronize events (follow-up commits)
+      previousHeadSha: payload.action === 'synchronize' ? payload.before : undefined,
       files,
     };
   }

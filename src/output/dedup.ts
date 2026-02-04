@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Octokit } from '@octokit/rest';
-import Anthropic from '@anthropic-ai/sdk';
-import { z } from 'zod';
 import type { Finding } from '../types/index.js';
+import { convene, duplicateJudge } from '../council/index.js';
 
 /**
  * Parsed marker data from a Warden comment.
@@ -354,14 +353,6 @@ export async function fetchExistingWardenComments(
   return allComments.filter((c) => c.isWarden);
 }
 
-/** Schema for validating LLM deduplication response with matched indices */
-const DuplicateMatchesSchema = z.array(
-  z.object({
-    findingIndex: z.number().int(),
-    existingIndex: z.number().int(),
-  })
-);
-
 /**
  * Use LLM to identify which findings are semantic duplicates of existing comments.
  * Returns a Map of finding ID to matched ExistingComment.
@@ -375,65 +366,27 @@ async function findSemanticDuplicates(
     return new Map();
   }
 
-  const client = new Anthropic({ apiKey });
+  const result = await convene(
+    duplicateJudge,
+    { findings, existingComments },
+    { apiKey }
+  );
 
-  const existingList = existingComments
-    .map((c, i) => `${i + 1}. [${c.path}:${c.line}] "${c.title}" - ${c.description}`)
-    .join('\n');
-
-  const findingsList = findings
-    .map((f, i) => {
-      const line = f.location?.endLine ?? f.location?.startLine;
-      const loc = f.location ? `${f.location.path}:${line}` : 'general';
-      return `${i + 1}. [${loc}] "${f.title}" - ${f.description}`;
-    })
-    .join('\n');
-
-  const prompt = `Compare these code review findings and identify duplicates.
-
-Existing comments:
-${existingList}
-
-New findings:
-${findingsList}
-
-Return a JSON array of objects identifying which findings are DUPLICATES of which existing comments.
-Only mark as duplicate if they describe the SAME issue at the SAME location (within a few lines).
-Different issues at the same location are NOT duplicates.
-
-Return ONLY the JSON array in this format:
-[{"findingIndex": 1, "existingIndex": 2}]
-where findingIndex is the 1-based index of the new finding and existingIndex is the 1-based index of the matching existing comment.
-Return [] if none are duplicates.`;
-
-  try {
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 512,
-      messages: [{ role: 'user', content: prompt }],
-    });
-
-    const content = response.content[0];
-    if (!content || content.type !== 'text') {
-      throw new Error('Unexpected response type');
-    }
-
-    const parsed = DuplicateMatchesSchema.parse(JSON.parse(content.text));
-    const matches = new Map<string, ExistingComment>();
-
-    for (const match of parsed) {
-      const finding = findings[match.findingIndex - 1];
-      const existing = existingComments[match.existingIndex - 1];
-      if (finding && existing) {
-        matches.set(finding.id, existing);
-      }
-    }
-
-    return matches;
-  } catch (error) {
-    console.warn(`LLM deduplication failed, falling back to hash-only: ${error}`);
+  if (!result.success) {
+    console.warn(`LLM deduplication failed, falling back to hash-only: ${result.error}`);
     return new Map();
   }
+
+  const matches = new Map<string, ExistingComment>();
+  for (const match of result.verdict) {
+    const finding = findings[match.findingIndex - 1];
+    const existing = existingComments[match.existingIndex - 1];
+    if (finding && existing) {
+      matches.set(finding.id, existing);
+    }
+  }
+
+  return matches;
 }
 
 /**

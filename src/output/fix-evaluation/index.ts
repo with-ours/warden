@@ -1,0 +1,26 @@
+export type { FixEvaluationResult, FixEvaluationContext } from './types.js';
+
+export {
+  parsePatchHunks,
+  didPatchTouchArea,
+  findRelevantPatches,
+  getPatchLineRange,
+} from './patch-analysis.js';
+
+export type { PatchHunk } from './patch-analysis.js';
+
+export {
+  buildFixPrompt,
+  parseEvaluationResponse,
+  evaluateFix,
+} from './llm-evaluator.js';
+
+export type { FixJudgeVerdict, FixStatus } from './llm-evaluator.js';
+
+export {
+  fetchFollowUpPatches,
+  postThreadReply,
+  formatFailedFixReply,
+} from './github-actions.js';
+
+export { evaluateFixAttempts } from './orchestrator.js';

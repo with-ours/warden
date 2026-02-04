@@ -15,6 +15,10 @@ import {
 } from '../../output/dedup.js';
 import type { ExistingComment } from '../../output/dedup.js';
 import { buildAnalyzedScope, findStaleComments, resolveStaleComments } from '../../output/stale.js';
+import {
+  evaluateFixAttempts,
+  postThreadReply,
+} from '../../output/fix-evaluation/index.js';
 import type { EventContext, SkillReport } from '../../types/index.js';
 import type { ReviewState } from '../../output/types.js';
 import { findBotReviewState } from '../review-state.js';
@@ -259,17 +263,78 @@ export async function runPRWorkflow(
   const triggerErrors = collectTriggerErrors(results);
   handleTriggerErrors(triggerErrors, matchedTriggers.length);
 
+  // Evaluate follow-up commit fix attempts (on synchronize events with existing comments)
+  const canResolveStale = shouldResolveStaleComments(results);
+  const wardenComments = fetchedComments.filter((c) => c.isWarden);
+  const allFindings = reports.flatMap((r) => r.findings);
+  const commentsResolvedByFixEval = new Set<number>();
+
+  if (
+    context.pullRequest?.previousHeadSha &&
+    wardenComments.length > 0 &&
+    canResolveStale &&
+    inputs.anthropicApiKey
+  ) {
+    try {
+      const fixEvaluation = await evaluateFixAttempts(
+        octokit,
+        wardenComments,
+        {
+          owner: context.repository.owner,
+          repo: context.repository.name,
+          previousSha: context.pullRequest.previousHeadSha,
+          currentSha: context.pullRequest.headSha,
+        },
+        allFindings,
+        inputs.anthropicApiKey
+      );
+
+      // Resolve successful fixes
+      if (fixEvaluation.toResolve.length > 0) {
+        const resolvedCount = await resolveStaleComments(octokit, fixEvaluation.toResolve);
+        if (resolvedCount > 0) {
+          console.log(`Resolved ${resolvedCount} comments via fix evaluation`);
+        }
+        // Track resolved comments so we don't try again in stale detection
+        fixEvaluation.toResolve.forEach((c) => commentsResolvedByFixEval.add(c.id));
+      }
+
+      // Post replies for failed fixes
+      for (const reply of fixEvaluation.toReply) {
+        if (reply.comment.threadId) {
+          try {
+            await postThreadReply(octokit, reply.comment.threadId, reply.replyBody);
+          } catch {
+            // Already logged in postThreadReply
+          }
+        }
+      }
+
+      if (fixEvaluation.evaluated > 0) {
+        console.log(
+          `Fix evaluation: ${fixEvaluation.evaluated} evaluated, ` +
+          `${fixEvaluation.toResolve.length} resolved, ` +
+          `${fixEvaluation.toReply.length} need attention, ` +
+          `${fixEvaluation.skipped} skipped`
+        );
+      }
+    } catch (error) {
+      console.warn(`::warning::Failed to evaluate fix attempts: ${error}`);
+    }
+  }
+
   // Resolve stale Warden comments (comments that no longer have matching findings)
   // Use fetchedComments (not existingComments) to only check comments that have threadIds
   // Only resolve if ALL triggers succeeded - otherwise findings may be missing due to failures
   // Filter to only Warden comments - we don't resolve external comments
-  const canResolveStale = shouldResolveStaleComments(results);
-  const wardenComments = fetchedComments.filter((c) => c.isWarden);
+  // Exclude comments already resolved by fix evaluation
   if (context.pullRequest && wardenComments.length > 0 && canResolveStale) {
     try {
-      const allFindings = reports.flatMap((r) => r.findings);
       const scope = buildAnalyzedScope(context.pullRequest.files);
-      const staleComments = findStaleComments(wardenComments, allFindings, scope);
+      const commentsForStaleCheck = wardenComments.filter(
+        (c) => !commentsResolvedByFixEval.has(c.id)
+      );
+      const staleComments = findStaleComments(commentsForStaleCheck, allFindings, scope);
 
       if (staleComments.length > 0) {
         const resolvedCount = await resolveStaleComments(octokit, staleComments);

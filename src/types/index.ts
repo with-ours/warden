@@ -159,6 +159,8 @@ export const PullRequestContextSchema = z.object({
   baseBranch: z.string(),
   headBranch: z.string(),
   headSha: z.string(),
+  /** Previous HEAD SHA (only present on synchronize events) */
+  previousHeadSha: z.string().optional(),
   files: z.array(FileChangeSchema),
 });
 export type PullRequestContext = z.infer<typeof PullRequestContextSchema>;
