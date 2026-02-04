@@ -1,7 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { z } from 'zod';
-import { buildFixPrompt, parseEvaluationResponse } from './llm-evaluator.js';
 import type { ExistingComment } from '../dedup.js';
+
+// Mock Anthropic before importing evaluateFix
+const mockCreate = vi.fn();
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: class MockAnthropic {
+    messages = { create: mockCreate };
+  },
+}));
+
+// Import after mocking
+const { buildFixPrompt, parseEvaluationResponse, evaluateFix } = await import('./llm-evaluator.js');
 
 const mockComment: ExistingComment = {
   id: 1,
@@ -116,5 +126,63 @@ This should work.`;
     const result = parseEvaluationResponse(response, TestSchema);
 
     expect(result).toEqual({ value: true, reason: 'The fix addresses the issue' });
+  });
+});
+
+describe('evaluateFix', () => {
+  beforeEach(() => {
+    mockCreate.mockReset();
+  });
+
+  it('returns resolved status when fix succeeds', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"status": "resolved", "reasoning": "Fix correctly addresses the issue"}' }],
+    });
+
+    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+
+    expect(result.status).toBe('resolved');
+    expect(result.reasoning).toBe('Fix correctly addresses the issue');
+  });
+
+  it('returns attempted_failed when fix is incorrect', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"status": "attempted_failed", "reasoning": "Edge case not handled"}' }],
+    });
+
+    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+
+    expect(result.status).toBe('attempted_failed');
+    expect(result.reasoning).toContain('Edge case');
+  });
+
+  it('returns not_attempted when patch is unrelated', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"status": "not_attempted", "reasoning": "Changes unrelated to the issue"}' }],
+    });
+
+    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+
+    expect(result.status).toBe('not_attempted');
+  });
+
+  it('returns fallback on API error', async () => {
+    mockCreate.mockRejectedValue(new Error('API rate limit'));
+
+    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+
+    expect(result.status).toBe('not_attempted');
+    expect(result.reasoning).toBe('Evaluation failed');
+  });
+
+  it('returns fallback on invalid response', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: 'No JSON here!' }],
+    });
+
+    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+
+    expect(result.status).toBe('not_attempted');
+    expect(result.reasoning).toBe('Evaluation failed');
   });
 });

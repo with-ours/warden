@@ -12,6 +12,7 @@ import type { SkillReport, Finding } from '../../types/index.js';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const FIXTURES_DIR = join(__dirname, '__fixtures__');
 const EVENT_PAYLOAD_PATH = join(FIXTURES_DIR, 'event-payloads/pull_request_opened.json');
+const SYNC_EVENT_PAYLOAD_PATH = join(FIXTURES_DIR, 'event-payloads/pull_request_synchronize.json');
 
 // -----------------------------------------------------------------------------
 // Mocks - ONLY external boundaries: LLM calls
@@ -38,6 +39,14 @@ vi.mock('../../output/dedup.js', async () => {
   };
 });
 
+// Mock fix evaluation - has LLM calls
+vi.mock('../../output/fix-evaluation/index.js', () => ({
+  evaluateFixAttempts: vi.fn(() =>
+    Promise.resolve({ toResolve: [], toReply: [], skipped: 0, evaluated: 0 })
+  ),
+  postThreadReply: vi.fn(() => Promise.resolve()),
+}));
+
 // Mock base utilities that call process.exit or need system access
 vi.mock('./base.js', async () => {
   const actual = await vi.importActual('./base.js');
@@ -54,6 +63,7 @@ vi.mock('./base.js', async () => {
 // Import after mocks
 import { runSkill } from '../../sdk/runner.js';
 import { fetchExistingComments, deduplicateFindings } from '../../output/dedup.js';
+import { evaluateFixAttempts, postThreadReply } from '../../output/fix-evaluation/index.js';
 import { setFailed } from './base.js';
 import { runPRWorkflow } from './pr-workflow.js';
 import { clearSkillsCache } from '../../skills/loader.js';
@@ -62,6 +72,8 @@ import { clearSkillsCache } from '../../skills/loader.js';
 const mockRunSkill = vi.mocked(runSkill);
 const mockFetchExistingComments = vi.mocked(fetchExistingComments);
 const mockDeduplicateFindings = vi.mocked(deduplicateFindings);
+const mockEvaluateFixAttempts = vi.mocked(evaluateFixAttempts);
+const mockPostThreadReply = vi.mocked(postThreadReply);
 const mockSetFailed = vi.mocked(setFailed);
 
 // -----------------------------------------------------------------------------
@@ -422,6 +434,142 @@ describe('runPRWorkflow', () => {
         }),
         expect.any(Object)
       );
+    });
+  });
+
+  describe('fix evaluation integration', () => {
+    const existingWardenComment = {
+      id: 1,
+      path: 'src/test.ts',
+      line: 10,
+      title: 'SQL Injection',
+      description: 'User input passed to query',
+      contentHash: 'abc123',
+      threadId: 'thread-123',
+      isWarden: true,
+      isResolved: false,
+    };
+
+    it('evaluates fix attempts on synchronize event with existing comments', async () => {
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([existingWardenComment]);
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        SYNC_EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      expect(mockEvaluateFixAttempts).toHaveBeenCalledWith(
+        mockOctokit,
+        [existingWardenComment],
+        expect.objectContaining({
+          owner: 'test-owner',
+          repo: 'test-repo',
+          previousSha: 'previous123sha',
+          currentSha: 'current456sha',
+        }),
+        expect.any(Array),
+        'test-api-key'
+      );
+    });
+
+    it('skips fix evaluation when no API key provided', async () => {
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([existingWardenComment]);
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs({ anthropicApiKey: '' }),
+        'pull_request',
+        SYNC_EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      expect(mockEvaluateFixAttempts).not.toHaveBeenCalled();
+    });
+
+    it('skips fix evaluation when no existing Warden comments', async () => {
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([]);
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        SYNC_EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      expect(mockEvaluateFixAttempts).not.toHaveBeenCalled();
+    });
+
+    it('skips fix evaluation on non-synchronize events', async () => {
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([existingWardenComment]);
+
+      // Use opened event (no previousHeadSha)
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      expect(mockEvaluateFixAttempts).not.toHaveBeenCalled();
+    });
+
+    it('posts replies for failed fix attempts', async () => {
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([existingWardenComment]);
+      mockEvaluateFixAttempts.mockResolvedValue({
+        toResolve: [],
+        toReply: [
+          {
+            comment: existingWardenComment,
+            replyBody: 'Fix attempt failed: edge case not handled',
+            commitSha: 'current456sha',
+          },
+        ],
+        skipped: 0,
+        evaluated: 1,
+      });
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        SYNC_EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      expect(mockPostThreadReply).toHaveBeenCalledWith(
+        mockOctokit,
+        'thread-123',
+        'Fix attempt failed: edge case not handled'
+      );
+    });
+
+    it('continues gracefully when fix evaluation fails', async () => {
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([existingWardenComment]);
+      mockEvaluateFixAttempts.mockRejectedValue(new Error('LLM API error'));
+
+      // Should not throw
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        SYNC_EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      // Workflow should complete despite fix-eval failure
+      const updateCheck = vi.mocked(mockOctokit.checks.update);
+      expect(updateCheck).toHaveBeenCalled();
     });
   });
 });
