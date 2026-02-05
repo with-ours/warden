@@ -23,8 +23,8 @@ export async function fetchFileContent(
     throw new Error(`Path "${path}" is a directory, not a file`);
   }
 
-  if (data.type !== 'file' || !('content' in data)) {
-    throw new Error(`Path "${path}" is not a file`);
+  if (data.type !== 'file' || !data.content) {
+    throw new Error(`Path "${path}" is not a file or content unavailable (file may be too large)`);
   }
 
   // Content is base64 encoded
