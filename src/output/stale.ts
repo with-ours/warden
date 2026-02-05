@@ -1,7 +1,6 @@
 import type { Octokit } from '@octokit/rest';
 import type { ExistingComment } from './dedup.js';
 import type { Finding, FileChange } from '../types/index.js';
-import { generateContentHash } from './dedup.js';
 
 /**
  * Scope of analyzed files in the PR.
@@ -29,79 +28,35 @@ export function isInAnalyzedScope(comment: ExistingComment, scope: AnalyzedScope
 }
 
 /**
- * Check if a finding matches a comment (same location and similar content).
- */
-function findingMatchesComment(finding: Finding, comment: ExistingComment): boolean {
-  // Must have a location to match
-  if (!finding.location) {
-    return false;
-  }
-
-  // File path must match
-  if (finding.location.path !== comment.path) {
-    return false;
-  }
-
-  // Check line proximity - findings may shift a few lines
-  const findingLine = finding.location.endLine ?? finding.location.startLine;
-  const lineDiff = Math.abs(findingLine - comment.line);
-  if (lineDiff > 5) {
-    return false;
-  }
-
-  // Check content hash for exact match
-  const findingHash = generateContentHash(finding.title, finding.description);
-  if (findingHash === comment.contentHash) {
-    return true;
-  }
-
-  // If hashes don't match exactly, check if the title is similar enough
-  // This handles cases where description might have minor changes
-  const normalizedFindingTitle = finding.title.toLowerCase().trim();
-  const normalizedCommentTitle = comment.title.toLowerCase().trim();
-  return normalizedFindingTitle === normalizedCommentTitle;
-}
-
-/**
- * Find comments that no longer have matching findings (stale comments).
- * Only considers comments on files that were in the analyzed scope.
+ * Find orphaned comments (comments on files no longer in scope).
+ *
+ * IMPORTANT: This function ONLY marks comments as stale when the file is orphaned
+ * (no longer in the PR scope). It does NOT resolve comments based on missing findings.
+ *
+ * Resolution based on findings is handled by fix evaluation, which uses an LLM to
+ * verify that a patch actually fixed the issue. This prevents incorrectly resolving
+ * comments when:
+ * - Non-deterministic LLM skills produce different findings on different runs
+ * - A commit doesn't touch the file with the finding
+ * - The underlying bug still exists but wasn't re-detected
+ *
+ * @param existingComments - Comments from previous Warden runs
+ * @param _allFindings - Unused, kept for API compatibility
+ * @param scope - Files currently in the PR scope
  */
 export function findStaleComments(
   existingComments: ExistingComment[],
-  allFindings: Finding[],
+  _allFindings: Finding[],
   scope: AnalyzedScope
 ): ExistingComment[] {
-  const staleComments: ExistingComment[] = [];
-
-  for (const comment of existingComments) {
-    // Skip comments that don't have thread IDs (can't resolve them)
-    if (!comment.threadId) {
-      continue;
-    }
-
-    // Skip already-resolved comments (nothing to do)
-    if (comment.isResolved) {
-      continue;
-    }
-
-    // Comments on files NOT in scope are orphaned (file renamed, reverted, etc.)
-    if (!isInAnalyzedScope(comment, scope)) {
-      staleComments.push(comment);
-      continue;
-    }
-
-    // Check if any finding matches this comment
-    const hasMatchingFinding = allFindings.some((finding) =>
-      findingMatchesComment(finding, comment)
-    );
-
-    // If no matching finding, this comment is stale
-    if (!hasMatchingFinding) {
-      staleComments.push(comment);
-    }
-  }
-
-  return staleComments;
+  return existingComments.filter((comment) => {
+    // Must have thread ID to resolve
+    if (!comment.threadId) return false;
+    // Already resolved, nothing to do
+    if (comment.isResolved) return false;
+    // Only orphaned comments (file no longer in scope) are stale
+    return !isInAnalyzedScope(comment, scope);
+  });
 }
 
 const RESOLVE_THREAD_MUTATION = `
