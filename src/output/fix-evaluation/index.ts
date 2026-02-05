@@ -11,7 +11,6 @@ export type { PatchHunk } from './patch-analysis.js';
 
 export {
   buildFixPrompt,
-  parseEvaluationResponse,
   evaluateFix,
 } from './llm-evaluator.js';
 

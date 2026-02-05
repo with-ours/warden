@@ -1,4 +1,4 @@
-import { conveneWithFallback, fixJudge, extractAndParseJson } from '../../council/index.js';
+import { conveneWithFallback, fixJudge } from '../../council/index.js';
 import type { ExistingComment } from '../dedup.js';
 import type { FixJudgeVerdict, FixJudgeContext, ConveneOptions, ConveneWithFallbackResult } from '../../council/index.js';
 
@@ -14,26 +14,6 @@ export function buildFixPrompt(
   codeBeforeFix: string
 ): string {
   return fixJudge.buildPrompt({ comment, changedFiles, codeBeforeFix });
-}
-
-/**
- * Parse an evaluation response from the LLM.
- * @deprecated Use convene() from council instead
- */
-export function parseEvaluationResponse<T>(
-  text: string,
-  schema: { parse: (data: unknown) => T }
-): T | null {
-  const parsed = extractAndParseJson(text);
-  if (!parsed) {
-    return null;
-  }
-
-  try {
-    return schema.parse(parsed);
-  } catch {
-    return null;
-  }
 }
 
 /**
