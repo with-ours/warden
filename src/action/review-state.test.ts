@@ -261,6 +261,111 @@ describe('coordinateReviewEvents', () => {
     });
   });
 
+  describe('unresolved Warden comments block approval', () => {
+    it('suppresses APPROVE when unresolved Warden comments exist', () => {
+      const unresolvedComments = [
+        {
+          id: 1,
+          path: 'file.ts',
+          line: 10,
+          title: 'Issue',
+          description: 'Description',
+          contentHash: 'abc123',
+          isWarden: true,
+          isResolved: false,
+        },
+      ];
+
+      const result = coordinateReviewEvents(
+        [{ triggerName: 'clean-trigger', reviewEvent: 'APPROVE', failed: false }],
+        unresolvedComments
+      );
+
+      expect(result).toEqual([
+        {
+          triggerName: 'clean-trigger',
+          reviewEvent: 'COMMENT',
+          approvalSuppressed: true,
+          suppressionReason: 'unresolved Warden comments from previous runs',
+        },
+      ]);
+    });
+
+    it('allows APPROVE when no unresolved comments exist', () => {
+      const result = coordinateReviewEvents(
+        [{ triggerName: 'clean-trigger', reviewEvent: 'APPROVE', failed: false }],
+        [] // empty array
+      );
+
+      expect(result).toEqual([
+        { triggerName: 'clean-trigger', reviewEvent: 'APPROVE', approvalSuppressed: false },
+      ]);
+    });
+
+    it('allows APPROVE when unresolvedWardenComments is undefined', () => {
+      const result = coordinateReviewEvents(
+        [{ triggerName: 'clean-trigger', reviewEvent: 'APPROVE', failed: false }],
+        undefined
+      );
+
+      expect(result).toEqual([
+        { triggerName: 'clean-trigger', reviewEvent: 'APPROVE', approvalSuppressed: false },
+      ]);
+    });
+
+    it('failed trigger takes priority over unresolved comments reason', () => {
+      const unresolvedComments = [
+        {
+          id: 1,
+          path: 'file.ts',
+          line: 10,
+          title: 'Issue',
+          description: 'Description',
+          contentHash: 'abc123',
+          isWarden: true,
+          isResolved: false,
+        },
+      ];
+
+      const result = coordinateReviewEvents(
+        [
+          { triggerName: 'failed-trigger', reviewEvent: undefined, failed: true },
+          { triggerName: 'clean-trigger', reviewEvent: 'APPROVE', failed: false },
+        ],
+        unresolvedComments
+      );
+
+      // Failed trigger reason should take priority
+      expect(result[1]!.suppressionReason).toBe('another trigger failed');
+    });
+
+    it('blocking findings takes priority over unresolved comments reason', () => {
+      const unresolvedComments = [
+        {
+          id: 1,
+          path: 'file.ts',
+          line: 10,
+          title: 'Issue',
+          description: 'Description',
+          contentHash: 'abc123',
+          isWarden: true,
+          isResolved: false,
+        },
+      ];
+
+      const result = coordinateReviewEvents(
+        [
+          { triggerName: 'blocking-trigger', reviewEvent: 'REQUEST_CHANGES', failed: false },
+          { triggerName: 'clean-trigger', reviewEvent: 'APPROVE', failed: false },
+        ],
+        unresolvedComments
+      );
+
+      // Blocking findings reason should take priority
+      expect(result[1]!.suppressionReason).toBe('another trigger has blocking findings');
+    });
+  });
+
   describe('edge cases', () => {
     it('handles empty trigger list', () => {
       const result = coordinateReviewEvents([]);

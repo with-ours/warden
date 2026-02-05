@@ -4,7 +4,7 @@ import { generateContentHash } from '../dedup.js';
 import type { Finding, UsageStats } from '../../types/index.js';
 import type { EvaluateFixAttemptsContext, EvaluateFixAttemptsResult } from './types.js';
 import { evaluateFix } from './llm-evaluator.js';
-import { fetchFollowUpPatches, fetchFileContent, formatFailedFixReply } from './github-actions.js';
+import { fetchFollowUpChanges, fetchFileContent, formatFailedFixReply } from './github-actions.js';
 import type { FixJudgeContext } from '../../council/index.js';
 
 /**
@@ -150,8 +150,11 @@ export async function evaluateFixAttempts(
     return result;
   }
 
-  // Fetch patches from the follow-up commit
-  const patches = await fetchFollowUpPatches(
+  // Fetch patches and commit messages from the follow-up commits
+  // TODO: Consider using git directly for commit messages (git log --format="%s" base..head)
+  // to avoid API calls. Would need to handle shallow clones gracefully (actions/checkout
+  // defaults to depth=1). API approach works regardless of checkout configuration.
+  const { patches, commitMessages } = await fetchFollowUpChanges(
     octokit,
     context.owner,
     context.repo,
@@ -221,7 +224,7 @@ export async function evaluateFixAttempts(
 
     // Judge fix status - let it explore with tools
     const evalResult = await evaluateFix(
-      { comment, changedFiles, codeBeforeFix, codeAfterFix },
+      { comment, changedFiles, codeBeforeFix, codeAfterFix, commitMessages },
       { apiKey, toolContext }
     );
 

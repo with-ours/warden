@@ -141,6 +141,22 @@ On follow-up commits, Warden evaluates all unresolved comments (up to 20) using 
 
 "Blocking" means findings at or above the `failOn` severity threshold.
 
+*"Current Findings" counts ALL unresolved blocking issues:
+- New findings from this analysis run
+- Existing unresolved Warden comments from previous runs
+
+Approval requires ALL blocking issues resolved. See "Partial Fix" example.
+
+### Definitions
+
+**Blocking**: Any unresolved comment posted by Warden at or above the `failOn` severity. These prevent PR approval.
+
+**Resolved**: A comment is resolved when either:
+- Warden resolves it (fix evaluation detected the issue was fixed)
+- User resolves it (manually marked resolved in GitHub UI)
+
+Either resolution type counts - Warden doesn't distinguish.
+
 **Important**: Approval only occurs when `failOn` is configured. Without an active threshold, Warden uses COMMENT even if it previously requested changes. This prevents accidental approval when configuration changes between runs.
 
 ### Approval Message

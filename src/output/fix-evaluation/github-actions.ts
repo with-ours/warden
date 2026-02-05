@@ -51,17 +51,28 @@ export async function fetchFileLines(
 }
 
 /**
- * Fetch the patches between two commits (for follow-up commit analysis).
- * Returns a map of file path to patch content.
+ * Result from fetching follow-up changes between two commits.
  */
-export async function fetchFollowUpPatches(
+export interface FollowUpChanges {
+  /** Map of file path to patch content */
+  patches: Map<string, string>;
+  /** Commit messages from the follow-up commits (helps judge understand intent) */
+  commitMessages: string[];
+}
+
+/**
+ * Fetch the patches and commit messages between two commits (for follow-up commit analysis).
+ * Returns patches and commit messages to help the judge understand developer intent.
+ */
+export async function fetchFollowUpChanges(
   octokit: Octokit,
   owner: string,
   repo: string,
   baseSha: string,
   headSha: string
-): Promise<Map<string, string>> {
+): Promise<FollowUpChanges> {
   const patches = new Map<string, string>();
+  const commitMessages: string[] = [];
 
   try {
     const { data } = await octokit.repos.compareCommits({
@@ -76,10 +87,34 @@ export async function fetchFollowUpPatches(
         patches.set(file.filename, file.patch);
       }
     }
+
+    // Extract commit messages (helps judge understand intent)
+    for (const commit of data.commits ?? []) {
+      if (commit.commit.message) {
+        commitMessages.push(commit.commit.message);
+      }
+    }
   } catch (error) {
-    console.warn(`Failed to fetch follow-up patches: ${error}`);
+    console.warn(`Failed to fetch follow-up changes: ${error}`);
   }
 
+  return { patches, commitMessages };
+}
+
+/**
+ * Fetch the patches between two commits (for follow-up commit analysis).
+ * Returns a map of file path to patch content.
+ *
+ * @deprecated Use fetchFollowUpChanges instead, which also returns commit messages.
+ */
+export async function fetchFollowUpPatches(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  baseSha: string,
+  headSha: string
+): Promise<Map<string, string>> {
+  const { patches } = await fetchFollowUpChanges(octokit, owner, repo, baseSha, headSha);
   return patches;
 }
 

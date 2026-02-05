@@ -228,7 +228,12 @@ export async function runPRWorkflow(
   const failureReasons: string[] = [];
 
   // Coordinate review events across triggers to ensure consistent PR state
-  const reviewCoordination = buildReviewCoordination(results);
+  // Per specs/comment-lifecycle.md "PR Approval Flow" - approval requires ALL issues resolved,
+  // including unresolved Warden comments from previous runs
+  const unresolvedWardenComments = fetchedComments.filter(
+    (c) => c.isWarden && !c.isResolved
+  );
+  const reviewCoordination = buildReviewCoordination(results, unresolvedWardenComments);
 
   // Use index-based lookup to handle duplicate trigger names correctly
   for (const [i, result] of results.entries()) {

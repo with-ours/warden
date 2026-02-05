@@ -11,6 +11,7 @@
 
 import type { SkillReport } from '../../types/index.js';
 import type { RenderResult } from '../../output/types.js';
+import type { ExistingComment } from '../../output/dedup.js';
 import type { TriggerReviewOutput } from '../review-state.js';
 import { coordinateReviewEvents } from '../review-state.js';
 
@@ -42,16 +43,22 @@ export interface TriggerExecutionResult {
  *
  * This determines which triggers can post APPROVE vs must downgrade to COMMENT.
  * The returned array has the same order as the input.
+ *
+ * @param results - Trigger execution results
+ * @param unresolvedWardenComments - Existing unresolved Warden comments from previous runs.
+ *   See specs/comment-lifecycle.md "PR Approval Flow" - approval requires ALL blocking issues resolved.
  */
 export function buildReviewCoordination(
-  results: TriggerExecutionResult[]
+  results: TriggerExecutionResult[],
+  unresolvedWardenComments?: ExistingComment[]
 ): TriggerReviewOutput[] {
   return coordinateReviewEvents(
     results.map((r) => ({
       triggerName: r.triggerName,
       reviewEvent: r.renderResult?.review?.event,
       failed: r.error !== undefined,
-    }))
+    })),
+    unresolvedWardenComments
   );
 }
 

@@ -33,6 +33,8 @@ export interface FixEvaluationInput {
   codeBeforeFix: string;
   /** Code at the issue location after the fix (optional, reduces tool calls when provided) */
   codeAfterFix?: string;
+  /** Commit messages from the follow-up commits (helps judge understand intent) */
+  commitMessages?: string[];
 }
 
 /**

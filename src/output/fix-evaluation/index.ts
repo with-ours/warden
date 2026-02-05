@@ -16,11 +16,14 @@ export type { FixJudgeVerdict, FixStatus } from './llm-evaluator.js';
 
 export {
   fetchFollowUpPatches,
+  fetchFollowUpChanges,
   fetchFileContent,
   fetchFileLines,
   postThreadReply,
   formatFailedFixReply,
 } from './github-actions.js';
+
+export type { FollowUpChanges } from './github-actions.js';
 
 export type { EvaluateFixOptions } from './llm-evaluator.js';
 

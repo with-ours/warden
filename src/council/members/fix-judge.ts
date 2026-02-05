@@ -11,6 +11,8 @@ export interface FixJudgeInput {
   codeBeforeFix: string;
   /** Code at the issue location after the fix attempt (optional, reduces tool calls) */
   codeAfterFix?: string;
+  /** Commit messages from the follow-up commits (helps judge understand intent) */
+  commitMessages?: string[];
 }
 
 /**
@@ -119,7 +121,7 @@ export const fixJudge = defineCouncilMember<FixJudgeInput, FixJudgeVerdict>({
   name: 'fix-judge',
   description: 'Judges whether a code change addressed a reported issue and if the fix succeeded',
 
-  buildPrompt: ({ comment, changedFiles, codeBeforeFix, codeAfterFix }) => {
+  buildPrompt: ({ comment, changedFiles, codeBeforeFix, codeAfterFix, commitMessages }) => {
     const afterCodeSection = codeAfterFix
       ? `
 
@@ -127,6 +129,15 @@ export const fixJudge = defineCouncilMember<FixJudgeInput, FixJudgeVerdict>({
 \`\`\`
 ${codeAfterFix}
 \`\`\``
+      : '';
+
+    const commitMessagesSection = commitMessages && commitMessages.length > 0
+      ? `
+
+## Commit Messages (Developer Intent)
+${commitMessages.map((msg, i) => `${i + 1}. ${msg.split('\n')[0]}`).join('\n')}
+
+Use these to help understand what the developer was trying to do. A commit mentioning "fix" or the issue topic suggests intent to address it.`
       : '';
 
     const investigationStrategy = codeAfterFix
@@ -162,15 +173,19 @@ Choose ONE verdict based on these criteria:
 - The code was refactored in a way that eliminates the issue by design
 - The problematic code was intentionally removed (file deleted, function removed, dead code cleaned up)
 
-**attempted_failed** - A fix was ATTEMPTED but the issue PERSISTS. Evidence:
-- Changes touch the reported location or related code, suggesting intent to fix
+**attempted_failed** - A fix was CLEARLY ATTEMPTED but the issue PERSISTS. Evidence:
+- Changes DIRECTLY modify the reported file at or near the issue location
+- AND the changes appear specifically intended to address THIS issue
 - BUT the core issue remains (wrong fix, incomplete fix, edge cases missed)
-- Use this when someone clearly tried to address the issue but didn't succeed
+- Use this ONLY when there's clear evidence of intent to fix THIS specific issue
+- Do NOT use for general refactoring, unrelated bug fixes, or changes to other files
+- When in doubt between attempted_failed and not_attempted, prefer not_attempted
 
 **not_attempted** - The issue was NOT ADDRESSED. Evidence:
 - No changes to the problematic code or its logic
 - Changes are unrelated (different feature, different bug, unrelated refactor)
 - The reported code is identical or functionally unchanged
+- Changes are in other files with no clear connection to the reported issue
 
 ## The Reported Issue
 
@@ -189,6 +204,7 @@ ${afterCodeSection}
 
 ## Changed Files in This Commit
 ${changedFiles.map((f) => `- ${f}`).join('\n')}
+${commitMessagesSection}
 
 ${investigationStrategy}
 

@@ -7,6 +7,7 @@
  */
 
 import type { ReviewState, GitHubReview } from '../output/types.js';
+import type { ExistingComment } from '../output/dedup.js';
 
 const VALID_REVIEW_STATES: ReadonlySet<string> = new Set(['CHANGES_REQUESTED', 'APPROVED', 'COMMENTED']);
 
@@ -54,13 +55,22 @@ export interface TriggerReviewOutput {
  * Rules (checked in order):
  * 1. If ANY trigger failed (undefined reviewEvent), no trigger posts APPROVE
  * 2. If ANY trigger has REQUEST_CHANGES, no trigger posts APPROVE
- * 3. Only ONE trigger posts APPROVE (first one wins)
+ * 3. If unresolved Warden comments exist from previous runs, no trigger posts APPROVE
+ *    (see specs/comment-lifecycle.md "PR Approval Flow" and "Partial Fix" example)
+ * 4. Only ONE trigger posts APPROVE (first one wins)
  *
  * When APPROVE is blocked, it's downgraded to COMMENT to avoid conflicting state.
+ *
+ * @param triggers - Review inputs from each trigger
+ * @param unresolvedWardenComments - Existing unresolved Warden comments from previous runs
  */
-export function coordinateReviewEvents(triggers: TriggerReviewInput[]): TriggerReviewOutput[] {
+export function coordinateReviewEvents(
+  triggers: TriggerReviewInput[],
+  unresolvedWardenComments?: ExistingComment[]
+): TriggerReviewOutput[] {
   const anyTriggerFailed = triggers.some((t) => t.failed);
   const anyHasBlockingFindings = triggers.some((t) => t.reviewEvent === 'REQUEST_CHANGES');
+  const hasUnresolvedComments = unresolvedWardenComments && unresolvedWardenComments.length > 0;
   let approvalPosted = false;
 
   return triggers.map((trigger) => {
@@ -81,6 +91,16 @@ export function coordinateReviewEvents(triggers: TriggerReviewInput[]): TriggerR
         reviewEvent: 'COMMENT' as const,
         approvalSuppressed: true,
         suppressionReason: 'another trigger has blocking findings',
+      };
+    }
+
+    // Per specs/comment-lifecycle.md: approval requires ALL blocking issues resolved
+    if (wantsApproval && hasUnresolvedComments) {
+      return {
+        triggerName: trigger.triggerName,
+        reviewEvent: 'COMMENT' as const,
+        approvalSuppressed: true,
+        suppressionReason: 'unresolved Warden comments from previous runs',
       };
     }
 

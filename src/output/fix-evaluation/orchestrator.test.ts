@@ -13,17 +13,22 @@ vi.mock('./llm-evaluator.js', () => ({
 
 // Mock GitHub actions
 vi.mock('./github-actions.js', () => ({
-  fetchFollowUpPatches: vi.fn(),
+  fetchFollowUpChanges: vi.fn(),
   fetchFileContent: vi.fn(),
   formatFailedFixReply: vi.fn((sha, reasoning) => `Fix attempt (${sha.slice(0, 7)}): ${reasoning}`),
 }));
 
 import { evaluateFix } from './llm-evaluator.js';
-import { fetchFollowUpPatches, fetchFileContent } from './github-actions.js';
+import { fetchFollowUpChanges, fetchFileContent } from './github-actions.js';
 
 const mockedEvaluateFix = vi.mocked(evaluateFix);
-const mockedFetchFollowUpPatches = vi.mocked(fetchFollowUpPatches);
+const mockedFetchFollowUpChanges = vi.mocked(fetchFollowUpChanges);
 const mockedFetchFileContent = vi.mocked(fetchFileContent);
+
+/** Helper to create mock follow-up changes result */
+function mockFollowUpChanges(patches: Map<string, string>, commitMessages: string[] = []): { patches: Map<string, string>; commitMessages: string[] } {
+  return { patches, commitMessages };
+}
 
 /** Helper to create mock evaluation result */
 function mockEvalResult(
@@ -85,7 +90,7 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']])));
 
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
 
@@ -108,7 +113,7 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']])));
 
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
 
@@ -129,7 +134,7 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']])));
 
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
 
@@ -150,7 +155,7 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']])));
     mockedFetchFileContent.mockResolvedValue('line 42');
     mockedEvaluateFix.mockResolvedValue(mockEvalResult('not_attempted', 'Changes in different file'));
 
@@ -175,7 +180,7 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']])));
     mockedFetchFileContent.mockResolvedValue('line 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42: vulnerable code\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52');
     mockedEvaluateFix.mockResolvedValue(mockEvalResult('not_attempted', 'Unrelated change'));
 
@@ -200,7 +205,7 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']])));
     mockedFetchFileContent.mockResolvedValue('line 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42: fixed code\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52');
     mockedEvaluateFix.mockResolvedValue(mockEvalResult('resolved', 'Properly sanitized with parameterized query'));
 
@@ -232,7 +237,7 @@ describe('evaluateFixAttempts', () => {
       location: { path: 'src/db.ts', startLine: 42 },
     };
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']])));
     mockedFetchFileContent.mockResolvedValue('line 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42: still vulnerable\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52');
     mockedEvaluateFix.mockResolvedValue(mockEvalResult('resolved', 'Tried to fix'));
 
@@ -264,7 +269,7 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']])));
     mockedFetchFileContent.mockResolvedValue('line 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42: partially fixed\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52');
     mockedEvaluateFix.mockResolvedValue(mockEvalResult('attempted_failed', 'Edge case not handled'));
 
@@ -299,11 +304,11 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(
-      new Map([
+    mockedFetchFollowUpChanges.mockResolvedValue(
+      mockFollowUpChanges(new Map([
         ['src/db.ts', '@@ -40,5 +40,7 @@\n+code'],
         ['src/api.ts', '@@ -8,5 +8,7 @@\n+code'],
-      ])
+      ]))
     );
     mockedFetchFileContent.mockResolvedValue('line 42');
 
@@ -346,7 +351,7 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map());
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map()));
 
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
 
@@ -378,8 +383,8 @@ describe('evaluateFixAttempts', () => {
       },
     ];
 
-    mockedFetchFollowUpPatches.mockResolvedValue(
-      new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code\n@@ -98,5 +100,7 @@\n+more']])
+    mockedFetchFollowUpChanges.mockResolvedValue(
+      mockFollowUpChanges(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code\n@@ -98,5 +100,7 @@\n+more']]))
     );
     // Return different content for different lines (we need at least 100 lines for the second comment)
     const lines = Array.from({ length: 120 }, (_, i) => `line ${i + 1}`);
@@ -413,7 +418,7 @@ describe('evaluateFixAttempts', () => {
     ];
 
     const patchContent = '@@ -40,5 +40,7 @@\n+fixed code';
-    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', patchContent]]));
+    mockedFetchFollowUpChanges.mockResolvedValue(mockFollowUpChanges(new Map([['src/db.ts', patchContent]])));
     mockedFetchFileContent.mockResolvedValue('line 42');
     mockedEvaluateFix.mockResolvedValue(mockEvalResult('resolved', 'Fixed'));
 
@@ -454,11 +459,11 @@ describe('evaluateFixAttempts', () => {
     ];
 
     // Multiple files changed
-    mockedFetchFollowUpPatches.mockResolvedValue(
-      new Map([
+    mockedFetchFollowUpChanges.mockResolvedValue(
+      mockFollowUpChanges(new Map([
         ['src/db.ts', '@@ -40,5 +40,7 @@\n+code'],
         ['src/utils.ts', '@@ -10,3 +10,5 @@\n+helper'],
-      ])
+      ]))
     );
     mockedFetchFileContent.mockResolvedValue('line 42');
     mockedEvaluateFix.mockResolvedValue(mockEvalResult('resolved', 'Fixed'));
