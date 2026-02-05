@@ -38,7 +38,7 @@ How Warden manages PR comments throughout their lifecycle: posting, deduplicatio
 - Indication that Warden is satisfied
 - No manual dismissal required
 
-**Expected behavior**: Warden approves the PR when previously-blocking issues are resolved.
+**Expected behavior**: Warden dismisses its review when previously-blocking issues are resolved.
 
 ---
 
@@ -133,8 +133,8 @@ On follow-up commits, Warden evaluates all unresolved comments (up to 20) using 
 | None | Non-blocking | COMMENT |
 | None | None | No review |
 | CHANGES_REQUESTED | Blocking | REQUEST_CHANGES |
-| CHANGES_REQUESTED | Non-blocking | APPROVE |
-| CHANGES_REQUESTED | None | APPROVE |
+| CHANGES_REQUESTED | Non-blocking | DISMISS |
+| CHANGES_REQUESTED | None | DISMISS |
 | APPROVED | Blocking | REQUEST_CHANGES |
 | APPROVED | Non-blocking | COMMENT |
 | COMMENTED | Any | (follow "None" rules) |
@@ -159,11 +159,13 @@ Either resolution type counts - Warden doesn't distinguish.
 
 **Important**: Approval only occurs when `failOn` is configured. Without an active threshold, Warden uses COMMENT even if it previously requested changes. This prevents accidental approval when configuration changes between runs.
 
-### Approval Message
+### Review Dismissal
 
-When Warden approves after previously requesting changes:
+When all previously reported issues are resolved, Warden dismisses its CHANGES_REQUESTED review:
 
 > All previously reported issues have been resolved.
+
+This clears the blocking state without approving the PR.
 
 ### Bot Identity
 

@@ -18,10 +18,6 @@ interface SuccessfulTrigger {
   triggerName: string;
   report: SkillReport;
   renderResult: RenderResult;
-  reviewDecision: {
-    approvalSuppressed: boolean;
-    suppressionReason?: string;
-  };
 }
 
 interface OrchestrationResult {
@@ -49,10 +45,6 @@ function orchestrateReviews(results: TriggerExecutionResult[]): OrchestrationRes
         coordinatedReview !== result.renderResult.review
           ? { ...result.renderResult, review: coordinatedReview }
           : result.renderResult,
-      reviewDecision: {
-        approvalSuppressed: coord.approvalSuppressed,
-        suppressionReason: coord.suppressionReason,
-      },
     });
   }
 
@@ -71,7 +63,7 @@ function makeReport(skill: string, findings: SkillReport['findings'] = []): Skil
   return { skill, summary: `${skill} report`, findings };
 }
 
-function makeRenderResult(event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'): RenderResult {
+function makeRenderResult(event: 'REQUEST_CHANGES' | 'COMMENT'): RenderResult {
   return {
     review: { event, body: '', comments: [] },
     summaryComment: '',
@@ -83,15 +75,6 @@ function makeRenderResult(event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'): Ren
  * Each method returns a TriggerExecutionResult representing that scenario.
  */
 const Trigger = {
-  /** Succeeded, wants to approve (e.g., no findings, clearing previous REQUEST_CHANGES) */
-  approving(name: string): TriggerExecutionResult {
-    return {
-      triggerName: name,
-      report: makeReport(name),
-      renderResult: makeRenderResult('APPROVE'),
-    };
-  },
-
   /** Succeeded, has blocking findings (REQUEST_CHANGES) */
   blocking(name: string): TriggerExecutionResult {
     return {
@@ -137,61 +120,9 @@ const Trigger = {
 // -----------------------------------------------------------------------------
 
 describe('orchestrateReviews', () => {
-  describe('approval blocking', () => {
-    it('blocks approval when another trigger failed', () => {
-      const results = [Trigger.failed('security-review'), Trigger.approving('code-review')];
-
-      const { successful } = orchestrateReviews(results);
-
-      const codeReview = successful.find((r) => r.triggerName === 'code-review');
-      expect(codeReview?.reviewDecision.approvalSuppressed).toBe(true);
-      expect(codeReview?.reviewDecision.suppressionReason).toBe('another trigger failed');
-      expect(codeReview?.renderResult.review?.event).toBe('COMMENT');
-    });
-
-    it('blocks approval when another trigger has blocking findings', () => {
-      const results = [Trigger.blocking('security-review'), Trigger.approving('code-review')];
-
-      const { successful } = orchestrateReviews(results);
-
-      const codeReview = successful.find((r) => r.triggerName === 'code-review');
-      expect(codeReview?.reviewDecision.approvalSuppressed).toBe(true);
-      expect(codeReview?.reviewDecision.suppressionReason).toBe(
-        'another trigger has blocking findings'
-      );
-    });
-
-    it('allows only one approval when multiple triggers want to approve', () => {
-      const results = [
-        Trigger.approving('security-review'),
-        Trigger.approving('code-review'),
-        Trigger.approving('perf-review'),
-      ];
-
-      const { successful } = orchestrateReviews(results);
-
-      const approved = successful.filter((r) => r.renderResult.review?.event === 'APPROVE');
-      const suppressed = successful.filter((r) => r.reviewDecision.approvalSuppressed);
-
-      expect(approved).toHaveLength(1);
-      expect(approved[0]?.triggerName).toBe('security-review'); // First wins
-      expect(suppressed).toHaveLength(2);
-    });
-
-    it('allows approval when all triggers succeed with no blocking findings', () => {
-      const results = [Trigger.commenting('security-review'), Trigger.approving('code-review')];
-
-      const { successful } = orchestrateReviews(results);
-
-      const codeReview = successful.find((r) => r.triggerName === 'code-review');
-      expect(codeReview?.reviewDecision.approvalSuppressed).toBe(false);
-      expect(codeReview?.renderResult.review?.event).toBe('APPROVE');
-    });
-  });
-
   describe('stale comment resolution', () => {
     it('allows stale resolution when all triggers succeed', () => {
-      const results = [Trigger.commenting('security-review'), Trigger.approving('code-review')];
+      const results = [Trigger.commenting('security-review'), Trigger.commenting('code-review')];
 
       const { canResolveStale } = orchestrateReviews(results);
 
@@ -199,7 +130,7 @@ describe('orchestrateReviews', () => {
     });
 
     it('blocks stale resolution when any trigger failed', () => {
-      const results = [Trigger.failed('security-review'), Trigger.approving('code-review')];
+      const results = [Trigger.failed('security-review'), Trigger.commenting('code-review')];
 
       const { canResolveStale, failedTriggers } = orchestrateReviews(results);
 
@@ -242,28 +173,24 @@ describe('orchestrateReviews', () => {
     });
   });
 
-  describe('priority ordering', () => {
-    it('failed trigger blocks approval even when listed after approving trigger', () => {
-      const results = [Trigger.approving('code-review'), Trigger.failed('security-review')];
+  describe('review event pass-through', () => {
+    it('passes through REQUEST_CHANGES from triggers', () => {
+      const results = [Trigger.blocking('security-review'), Trigger.commenting('code-review')];
 
       const { successful } = orchestrateReviews(results);
 
-      const codeReview = successful.find((r) => r.triggerName === 'code-review');
-      expect(codeReview?.reviewDecision.approvalSuppressed).toBe(true);
-      expect(codeReview?.reviewDecision.suppressionReason).toBe('another trigger failed');
+      const securityReview = successful.find((r) => r.triggerName === 'security-review');
+      expect(securityReview?.renderResult.review?.event).toBe('REQUEST_CHANGES');
     });
 
-    it('failure reason takes priority over blocking findings reason', () => {
-      const results = [
-        Trigger.failed('perf-review'),
-        Trigger.blocking('security-review'),
-        Trigger.approving('code-review'),
-      ];
+    it('passes through COMMENT from triggers', () => {
+      const results = [Trigger.commenting('security-review'), Trigger.commenting('code-review')];
 
       const { successful } = orchestrateReviews(results);
 
-      const codeReview = successful.find((r) => r.triggerName === 'code-review');
-      expect(codeReview?.reviewDecision.suppressionReason).toBe('another trigger failed');
+      for (const result of successful) {
+        expect(result.renderResult.review?.event).toBe('COMMENT');
+      }
     });
   });
 });
@@ -275,7 +202,7 @@ describe('orchestrateReviews', () => {
 describe('buildReviewCoordination', () => {
   it('returns coordination array matching input order', () => {
     const results: TriggerExecutionResult[] = [
-      Trigger.approving('a'),
+      Trigger.commenting('a'),
       Trigger.failed('b'),
       Trigger.blocking('c'),
     ];
@@ -291,7 +218,7 @@ describe('buildReviewCoordination', () => {
 
 describe('shouldResolveStaleComments', () => {
   it('returns true when no errors', () => {
-    expect(shouldResolveStaleComments([Trigger.commenting('a'), Trigger.approving('b')])).toBe(
+    expect(shouldResolveStaleComments([Trigger.commenting('a'), Trigger.commenting('b')])).toBe(
       true
     );
   });

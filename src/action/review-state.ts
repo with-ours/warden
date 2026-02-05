@@ -37,12 +37,8 @@ export interface TriggerReviewInput {
  */
 export interface TriggerReviewOutput {
   triggerName: string;
-  /** The final event to post (may be downgraded from APPROVE to COMMENT) */
+  /** The final event to post */
   reviewEvent: GitHubReview['event'] | undefined;
-  /** True if this trigger wanted APPROVE but was downgraded to COMMENT */
-  approvalSuppressed: boolean;
-  /** Human-readable reason for suppression */
-  suppressionReason?: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -52,105 +48,36 @@ export interface TriggerReviewOutput {
 /**
  * Coordinate review events across multiple triggers to ensure consistent PR state.
  *
- * Rules (checked in order):
- * 1. If ANY trigger failed (undefined reviewEvent), no trigger posts APPROVE
- * 2. If ANY trigger has REQUEST_CHANGES, no trigger posts APPROVE
- * 3. If unresolved Warden comments exist from previous runs, no trigger posts APPROVE
- *    (see specs/comment-lifecycle.md "PR Approval Flow" and "Partial Fix" example)
- * 4. Only ONE trigger posts APPROVE (first one wins)
- *
- * When APPROVE is blocked, it's downgraded to COMMENT to avoid conflicting state.
+ * Since we no longer post APPROVE reviews (dismissal is handled separately via
+ * the dismissReview API), this simply passes through the review events from
+ * each trigger. The only coordination needed is ensuring REQUEST_CHANGES from
+ * one trigger doesn't conflict with other triggers, but GitHub handles this
+ * correctly since each trigger posts its own review.
  *
  * @param triggers - Review inputs from each trigger
- * @param unresolvedWardenComments - Existing unresolved Warden comments from previous runs
+ * @param _unresolvedWardenComments - Unused, kept for API compatibility
  */
 export function coordinateReviewEvents(
   triggers: TriggerReviewInput[],
-  unresolvedWardenComments?: ExistingComment[]
+  _unresolvedWardenComments?: ExistingComment[]
 ): TriggerReviewOutput[] {
-  const anyTriggerFailed = triggers.some((t) => t.failed);
-  const anyHasBlockingFindings = triggers.some((t) => t.reviewEvent === 'REQUEST_CHANGES');
-  const hasUnresolvedComments = unresolvedWardenComments && unresolvedWardenComments.length > 0;
-  let approvalPosted = false;
-
-  return triggers.map((trigger) => {
-    const wantsApproval = trigger.reviewEvent === 'APPROVE';
-
-    if (wantsApproval && anyTriggerFailed) {
-      return {
-        triggerName: trigger.triggerName,
-        reviewEvent: 'COMMENT' as const,
-        approvalSuppressed: true,
-        suppressionReason: 'another trigger failed',
-      };
-    }
-
-    if (wantsApproval && anyHasBlockingFindings) {
-      return {
-        triggerName: trigger.triggerName,
-        reviewEvent: 'COMMENT' as const,
-        approvalSuppressed: true,
-        suppressionReason: 'another trigger has blocking findings',
-      };
-    }
-
-    // Per specs/comment-lifecycle.md: approval requires ALL blocking issues resolved
-    if (wantsApproval && hasUnresolvedComments) {
-      return {
-        triggerName: trigger.triggerName,
-        reviewEvent: 'COMMENT' as const,
-        approvalSuppressed: true,
-        suppressionReason: 'unresolved Warden comments from previous runs',
-      };
-    }
-
-    if (wantsApproval && approvalPosted) {
-      return {
-        triggerName: trigger.triggerName,
-        reviewEvent: 'COMMENT' as const,
-        approvalSuppressed: true,
-        suppressionReason: 'approval already posted by earlier trigger',
-      };
-    }
-
-    if (wantsApproval) {
-      approvalPosted = true;
-    }
-
-    return {
-      triggerName: trigger.triggerName,
-      reviewEvent: trigger.reviewEvent,
-      approvalSuppressed: false,
-    };
-  });
+  return triggers.map((trigger) => ({
+    triggerName: trigger.triggerName,
+    reviewEvent: trigger.reviewEvent,
+  }));
 }
 
 /**
  * Apply a coordination decision to a GitHub review object.
  *
- * When approval is suppressed:
- * - Downgrades APPROVE to COMMENT
- * - Clears the body to avoid misleading messages like "All issues resolved"
- *
- * Returns the original review unchanged if no suppression needed.
+ * Since we no longer post APPROVE reviews, this simply returns the review unchanged.
+ * Kept for API compatibility.
  */
 export function applyCoordinationToReview(
   review: GitHubReview | undefined,
-  coordination: TriggerReviewOutput | undefined
+  _coordination: TriggerReviewOutput | undefined
 ): GitHubReview | undefined {
-  if (!review || !coordination?.approvalSuppressed) {
-    return review;
-  }
-
-  if (review.event !== 'APPROVE') {
-    return review;
-  }
-
-  return {
-    ...review,
-    event: 'COMMENT',
-    body: '',
-  };
+  return review;
 }
 
 // -----------------------------------------------------------------------------
@@ -161,21 +88,31 @@ export function applyCoordinationToReview(
  * A GitHub review from the API (subset of fields we need).
  */
 export interface GitHubReviewInfo {
+  id: number;
   state: string;
   user?: { login: string } | null;
 }
 
 /**
+ * Result of finding the bot's most recent review.
+ * Contains both state and ID so we can dismiss if needed.
+ */
+export interface BotReviewInfo {
+  state: ReviewState;
+  reviewId: number;
+}
+
+/**
  * Find the bot's most recent review state on a PR.
  *
- * Used to determine if we should post an APPROVE to clear a previous
- * REQUEST_CHANGES when all issues are now resolved.
+ * Used to determine if we should dismiss a previous CHANGES_REQUESTED
+ * when all issues are now resolved.
  *
  * Returns null if:
  * - Bot has no reviews on this PR
  * - Bot's most recent review was DISMISSED (user explicitly cleared it)
  */
-export function findBotReviewState(reviews: GitHubReviewInfo[], botLogin: string): ReviewState | null {
+export function findBotReviewState(reviews: GitHubReviewInfo[], botLogin: string): BotReviewInfo | null {
   // GitHub API returns reviews in chronological order, search from end
   for (let i = reviews.length - 1; i >= 0; i--) {
     const review = reviews[i];
@@ -189,7 +126,7 @@ export function findBotReviewState(reviews: GitHubReviewInfo[], botLogin: string
     }
 
     if (isValidReviewState(review.state)) {
-      return review.state;
+      return { state: review.state, reviewId: review.id };
     }
   }
 

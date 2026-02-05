@@ -118,6 +118,7 @@ function createMockOctokit(options: MockOctokitOptions = {}): Octokit {
       listReviews: vi.fn(() => Promise.resolve({ data: [] })),
       createReview: vi.fn(() => Promise.resolve({ data: {} })),
       updateReviewComment: vi.fn(() => Promise.resolve({ data: {} })),
+      dismissReview: vi.fn(() => Promise.resolve({ data: {} })),
     },
     checks: {
       create: vi.fn(() =>
@@ -581,6 +582,123 @@ describe('runPRWorkflow', () => {
       // Workflow should complete despite fix-eval failure
       const updateCheck = vi.mocked(mockOctokit.checks.update);
       expect(updateCheck).toHaveBeenCalled();
+    });
+  });
+
+  describe('review dismissal', () => {
+    it('dismisses previous CHANGES_REQUESTED when all issues are resolved', async () => {
+      // Setup: previous review was CHANGES_REQUESTED
+      vi.mocked(mockOctokit.pulls.listReviews).mockResolvedValue({
+        data: [{ id: 999, state: 'CHANGES_REQUESTED', user: { login: 'warden[bot]' } }],
+      } as never);
+
+      // Existing comment that will be resolved by fix evaluation
+      const existingComment = {
+        id: 1,
+        path: 'src/test.ts',
+        line: 10,
+        title: 'SQL Injection',
+        description: 'User input passed to query',
+        contentHash: 'abc123',
+        threadId: 'thread-123',
+        isWarden: true,
+        isResolved: false,
+      };
+
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([existingComment]);
+      mockEvaluateFixAttempts.mockResolvedValue({
+        toResolve: [existingComment],
+        toReply: [],
+        skipped: 0,
+        evaluated: 1,
+        failedEvaluations: 0,
+        usage: { inputTokens: 100, outputTokens: 50, costUSD: 0.0003 },
+      });
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        SYNC_EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      // Verify dismissReview was called
+      const dismissReview = vi.mocked(mockOctokit.pulls.dismissReview);
+      expect(dismissReview).toHaveBeenCalledWith({
+        owner: 'test-owner',
+        repo: 'test-repo',
+        pull_number: 123,
+        review_id: 999,
+        message: 'All previously reported issues have been resolved.',
+      });
+    });
+
+    it('does not dismiss when unresolved comments remain', async () => {
+      // Setup: previous review was CHANGES_REQUESTED
+      vi.mocked(mockOctokit.pulls.listReviews).mockResolvedValue({
+        data: [{ id: 999, state: 'CHANGES_REQUESTED', user: { login: 'warden[bot]' } }],
+      } as never);
+
+      // Existing comment that is NOT resolved
+      const existingComment = {
+        id: 1,
+        path: 'src/test.ts',
+        line: 10,
+        title: 'SQL Injection',
+        description: 'User input passed to query',
+        contentHash: 'abc123',
+        threadId: 'thread-123',
+        isWarden: true,
+        isResolved: false,
+      };
+
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([existingComment]);
+      // Fix evaluation doesn't resolve the comment
+      mockEvaluateFixAttempts.mockResolvedValue({
+        toResolve: [],
+        toReply: [],
+        skipped: 1,
+        evaluated: 0,
+        failedEvaluations: 0,
+        usage: { inputTokens: 0, outputTokens: 0, costUSD: 0 },
+      });
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        SYNC_EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      // Verify dismissReview was NOT called
+      const dismissReview = vi.mocked(mockOctokit.pulls.dismissReview);
+      expect(dismissReview).not.toHaveBeenCalled();
+    });
+
+    it('does not dismiss when previous state is not CHANGES_REQUESTED', async () => {
+      // Setup: previous review was COMMENTED (not CHANGES_REQUESTED)
+      vi.mocked(mockOctokit.pulls.listReviews).mockResolvedValue({
+        data: [{ id: 999, state: 'COMMENTED', user: { login: 'warden[bot]' } }],
+      } as never);
+
+      mockRunSkill.mockResolvedValue(createSkillReport());
+      mockFetchExistingComments.mockResolvedValue([]);
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        SYNC_EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      // Verify dismissReview was NOT called
+      const dismissReview = vi.mocked(mockOctokit.pulls.dismissReview);
+      expect(dismissReview).not.toHaveBeenCalled();
     });
   });
 });

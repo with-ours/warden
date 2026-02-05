@@ -9,7 +9,7 @@ import type { Octokit } from '@octokit/rest';
 import type { ResolvedTrigger } from '../../config/loader.js';
 import type { WardenConfig } from '../../config/schema.js';
 import type { EventContext, SkillReport, SeverityThreshold } from '../../types/index.js';
-import type { RenderResult, ReviewState } from '../../output/types.js';
+import type { RenderResult } from '../../output/types.js';
 import { resolveSkillAsync } from '../../skills/loader.js';
 import { runSkill } from '../../sdk/runner.js';
 import { renderSkillReport } from '../../output/renderer.js';
@@ -34,7 +34,6 @@ export interface TriggerExecutorDeps {
   config: WardenConfig;
   anthropicApiKey: string;
   claudePath: string;
-  previousReviewState: ReviewState | null;
   /** Global fail-on from action inputs (trigger-specific takes precedence) */
   globalFailOn?: SeverityThreshold;
   /** Global comment-on from action inputs (trigger-specific takes precedence) */
@@ -55,7 +54,6 @@ export interface TriggerResult {
   commentOnSuccess?: boolean;
   checkRunUrl?: string;
   maxFindings?: number;
-  previousReviewState?: ReviewState | null;
   error?: unknown;
 }
 
@@ -75,7 +73,7 @@ export async function executeTrigger(
   trigger: ResolvedTrigger,
   deps: TriggerExecutorDeps
 ): Promise<TriggerResult> {
-  const { octokit, context, config, anthropicApiKey, claudePath, previousReviewState } = deps;
+  const { octokit, context, config, anthropicApiKey, claudePath } = deps;
 
   logGroup(`Running trigger: ${trigger.name} (skill: ${trigger.skill})`);
 
@@ -127,19 +125,16 @@ export async function executeTrigger(
       }
     }
 
-    // Render if we're going to post comments OR if we might need to approve
-    // (approval can happen even with no comments when previousReviewState is CHANGES_REQUESTED)
-    const mightNeedApproval = previousReviewState === 'CHANGES_REQUESTED' && failOn && failOn !== 'off';
+    // Render if we're going to post comments
     const maxFindings = trigger.output.maxFindings ?? deps.globalMaxFindings;
     const renderResult =
-      commentOn !== 'off' || mightNeedApproval
+      commentOn !== 'off'
         ? renderSkillReport(report, {
             maxFindings,
             commentOn,
             failOn,
             checkRunUrl: skillCheckUrl,
             totalFindings: report.findings.length,
-            previousReviewState,
           })
         : undefined;
 
@@ -153,7 +148,6 @@ export async function executeTrigger(
       commentOnSuccess: trigger.output.commentOnSuccess,
       checkRunUrl: skillCheckUrl,
       maxFindings,
-      previousReviewState,
     };
   } catch (error) {
     // Mark skill check as failed

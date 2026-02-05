@@ -132,20 +132,12 @@ export async function postTriggerReview(
     return { posted: false, newComments, shouldFail: false };
   }
 
-  const needsApproval = coordination?.reviewEvent === 'APPROVE';
-
-  if (coordination?.approvalSuppressed) {
-    console.log(
-      `Suppressing APPROVE for ${result.triggerName}: ${coordination.suppressionReason}`
-    );
-  }
-
   // Filter findings by commentOn threshold
   const filteredFindings = filterFindingsBySeverity(result.report.findings, result.commentOn);
   const commentOnSuccess = result.commentOnSuccess ?? false;
 
   // Skip if nothing to post
-  if (!result.renderResult || (filteredFindings.length === 0 && !commentOnSuccess && !needsApproval)) {
+  if (!result.renderResult || (filteredFindings.length === 0 && !commentOnSuccess)) {
     return { posted: false, newComments, shouldFail: false };
   }
 
@@ -192,15 +184,9 @@ export async function postTriggerReview(
     // Check if failOn threshold is met (even if all findings deduplicated, we still need REQUEST_CHANGES)
     const needsRequestChanges = result.failOn && shouldFail(result.report, result.failOn);
 
-    // Only post if we have non-duplicate findings, commentOnSuccess, approval needed, or REQUEST_CHANGES needed
-    if (findingsToPost.length > 0 || commentOnSuccess || needsApproval || needsRequestChanges) {
+    // Only post if we have non-duplicate findings, commentOnSuccess, or REQUEST_CHANGES needed
+    if (findingsToPost.length > 0 || commentOnSuccess || needsRequestChanges) {
       // Re-render with deduplicated findings if any were removed
-      // Don't pass previousReviewState if this trigger's approval was suppressed
-      // (to avoid re-rendering as APPROVE when coordination decided otherwise)
-      const effectivePreviousReviewState = coordination?.approvalSuppressed
-        ? null
-        : result.previousReviewState;
-
       let renderResultToPost =
         findingsToPost.length !== filteredFindings.length
           ? renderSkillReport(
@@ -211,9 +197,7 @@ export async function postTriggerReview(
                 failOn: result.failOn,
                 checkRunUrl: result.checkRunUrl,
                 totalFindings: result.report.findings.length,
-                // Pass original findings for failOn evaluation (not affected by dedup)
                 allFindings: result.report.findings,
-                previousReviewState: effectivePreviousReviewState,
               }
             )
           : result.renderResult;
