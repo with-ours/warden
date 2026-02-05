@@ -204,10 +204,6 @@ export async function evaluateFixAttempts(
 
   // Evaluate each comment
   for (const comment of commentsToEvaluate) {
-    if (!relevantPatches.has(comment.id)) {
-      continue;
-    }
-
     result.evaluated++;
 
     // Fetch code snippets at the finding location
