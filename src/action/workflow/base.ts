@@ -190,11 +190,22 @@ export function setWorkflowOutputs(outputs: WorkflowOutputs): void {
  * For GitHub Apps, this returns the app's slug with [bot] suffix (e.g., "warden[bot]").
  */
 export async function getAuthenticatedBotLogin(octokit: Octokit): Promise<string | null> {
+  // Try GitHub App endpoint first (GET /app)
+  try {
+    const { data: app } = await octokit.apps.getAuthenticated();
+    if (app?.slug) {
+      return `${app.slug}[bot]`;
+    }
+  } catch {
+    // Not a GitHub App token, try user endpoint
+  }
+
+  // Fall back to user endpoint for PATs
   try {
     const { data: user } = await octokit.users.getAuthenticated();
     return user.login;
   } catch {
-    // May fail if using a non-app token (e.g., PAT or GITHUB_TOKEN)
+    // Neither app nor user token worked
     return null;
   }
 }
