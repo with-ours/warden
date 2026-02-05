@@ -58,6 +58,17 @@ describe('extractJson', () => {
     const input = 'Data: {"outer": {"inner": true}}';
     expect(extractJson(input)).toBe('{"outer": {"inner": true}}');
   });
+
+  it('does not over-match when text contains braces after JSON', () => {
+    // Regression test: greedy regex would match from first { to last }
+    const input = '{"verdict": "ok"} The function() { return x; } works';
+    expect(extractJson(input)).toBe('{"verdict": "ok"}');
+  });
+
+  it('does not over-match arrays with trailing braces', () => {
+    const input = '[1, 2] and then some { other } stuff';
+    expect(extractJson(input)).toBe('[1, 2]');
+  });
 });
 
 describe('extractAndParseJson', () => {

@@ -88,7 +88,8 @@ export function getPatchLineRange(patch: string): { start: number; end: number }
 
   for (const hunk of hunks) {
     start = Math.min(start, hunk.newStart);
-    end = Math.max(end, hunk.newStart + hunk.newCount - 1);
+    // Use Math.max(newCount, 1) to handle pure deletions (newCount=0)
+    end = Math.max(end, hunk.newStart + Math.max(hunk.newCount, 1) - 1);
   }
 
   return { start, end };

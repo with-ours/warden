@@ -295,8 +295,11 @@ export async function runPRWorkflow(
         if (resolvedCount > 0) {
           console.log(`Resolved ${resolvedCount} comments via fix evaluation`);
         }
-        // Track resolved comments so we don't try again in stale detection
-        fixEvaluation.toResolve.forEach((c) => commentsResolvedByFixEval.add(c.id));
+        // Only skip stale detection if all comments were resolved successfully
+        // If some failed, let stale detection retry them
+        if (resolvedCount === fixEvaluation.toResolve.length) {
+          fixEvaluation.toResolve.forEach((c) => commentsResolvedByFixEval.add(c.id));
+        }
       }
 
       // Post replies for failed fixes

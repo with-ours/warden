@@ -230,4 +230,13 @@ describe('getPatchLineRange', () => {
   it('returns null for patch without hunks', () => {
     expect(getPatchLineRange('diff --git a/file.ts b/file.ts')).toBeNull();
   });
+
+  it('handles pure deletion hunk (newCount=0) without inverted range', () => {
+    // Regression test: newCount=0 caused end < start
+    const patch = '@@ -10,5 +10,0 @@\n-deleted line';
+    const range = getPatchLineRange(patch);
+    expect(range).toEqual({ start: 10, end: 10 });
+    // Verify end >= start
+    expect(range!.end).toBeGreaterThanOrEqual(range!.start);
+  });
 });

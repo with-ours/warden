@@ -17,7 +17,7 @@ export function stripCodeFences(text: string): string {
 
 /**
  * Extract the first JSON object or array from text.
- * Handles surrounding prose, markdown, etc.
+ * Handles surrounding prose, markdown, nested structures, etc.
  *
  * @param text - Raw text that may contain JSON
  * @returns The extracted JSON string, or null if none found
@@ -26,9 +26,8 @@ export function extractJson(text: string): string | null {
   // First try stripping code fences
   const stripped = stripCodeFences(text);
 
-  // Match first JSON object or array
-  const match = stripped.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-  return match?.[0] ?? null;
+  // Use balanced extraction to correctly handle nested braces
+  return extractBalancedJson(stripped);
 }
 
 /**
