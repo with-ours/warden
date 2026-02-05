@@ -93,12 +93,14 @@ export const fixJudge = defineCouncilMember<FixJudgeInput, FixJudgeVerdict>({
   name: 'fix-judge',
   description: 'Judges whether a code change addressed a reported issue and if the fix succeeded',
 
-  buildPrompt: ({ comment, beforeCode, afterCode }) => `You are judging whether a code change addressed a code review finding.
+  buildPrompt: ({ comment, beforeCode, afterCode }) => `You are judging whether a code change fixed a specific issue that was reported in code review.
 
-## Original Finding
+Your job is to determine if the ISSUE DESCRIBED was addressed, not whether code at a particular line changed. The title and description below define the issue. The location is approximate and may be off by a few lines.
+
+## The Issue
 **Title:** ${comment.title}
 **Description:** ${comment.description}
-**Location:** ${comment.path}:${comment.line}
+**Approximate location:** ${comment.path} near line ${comment.line}
 
 ## Code BEFORE This Commit
 \`\`\`
@@ -110,17 +112,16 @@ ${beforeCode}
 ${afterCode}
 \`\`\`
 
-## Task
-Determine if this change addresses the finding:
+## Verdict
+Based on the before/after code, determine if the issue described above was addressed:
 
-1. **not_attempted** - The code is unchanged or changes are unrelated to the finding.
-2. **attempted_failed** - An attempt was made but the fix is incorrect or incomplete.
-3. **resolved** - The finding is correctly addressed.
+1. **not_attempted** - No changes related to this issue. The code that would need to change is identical.
+2. **attempted_failed** - Changes were made to address this issue but the fix is incorrect or incomplete.
+3. **resolved** - The issue described is fixed.
 
 If you need additional context (imports, related functions, etc.), use the get_file_at_commit tool.
 
-Return ONLY a JSON object in this exact format:
-{"status": "not_attempted|attempted_failed|resolved", "reasoning": "brief explanation"}`,
+Return ONLY a JSON object: {"status": "not_attempted|attempted_failed|resolved", "reasoning": "brief explanation"}`,
 
   tools: [getFileAtCommit],
   maxToolIterations: 2,

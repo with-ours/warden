@@ -23,7 +23,8 @@ describe('council members', () => {
       const prompt = fixJudge.buildPrompt({ comment, beforeCode, afterCode });
 
       expect(prompt).toContain('SQL Injection');
-      expect(prompt).toContain('src/db.ts:42');
+      expect(prompt).toContain('src/db.ts');
+      expect(prompt).toContain('near line 42');
       expect(prompt).toContain(beforeCode);
       expect(prompt).toContain(afterCode);
       expect(prompt).toContain('Code BEFORE');

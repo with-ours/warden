@@ -42,7 +42,8 @@ describe('buildFixPrompt', () => {
 
     expect(prompt).toContain('SQL Injection Vulnerability');
     expect(prompt).toContain('User input is passed directly');
-    expect(prompt).toContain('src/db.ts:42');
+    expect(prompt).toContain('src/db.ts');
+    expect(prompt).toContain('near line 42');
   });
 
   it('includes before and after code', () => {
