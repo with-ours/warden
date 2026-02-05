@@ -144,13 +144,24 @@ function determineReviewEvent(
   return 'COMMENT';
 }
 
+/**
+ * Render a suggested fix with both a diff preview and a GitHub suggestion block.
+ *
+ * GitHub suggestion syntax: The ```suggestion block must contain only the replacement
+ * content (no diff markers). When the comment is attached to specific line(s), GitHub
+ * will offer a "Commit suggestion" button that replaces those lines with the suggestion.
+ *
+ * @see https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/commenting-on-a-pull-request#adding-line-comments-to-a-pull-request
+ */
 function renderSuggestion(description: string, diff: string): string {
   const lines = diff.split('\n');
 
+  // Extract removed lines (what's being replaced) - skip diff header lines
   const removedLines = lines
     .filter((line) => line.startsWith('-') && !line.startsWith('---'))
     .map((line) => line.slice(1));
 
+  // Extract added lines (the replacement content) - skip diff header lines
   const addedLines = lines
     .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
     .map((line) => line.slice(1));
@@ -159,13 +170,15 @@ function renderSuggestion(description: string, diff: string): string {
     return `**Suggested fix:** ${escapeHtml(description)}`;
   }
 
-  // Show both removed and added lines for context
   let result = `**Suggested fix:** ${escapeHtml(description)}`;
 
+  // Show a diff block so reviewers can see what's being removed vs added
   if (removedLines.length > 0) {
     result += `\n\n\`\`\`diff\n${removedLines.map((l) => `-${l}`).join('\n')}\n${addedLines.map((l) => `+${l}`).join('\n')}\n\`\`\``;
   }
 
+  // GitHub suggestion block - contains only the replacement content (no diff markers)
+  // GitHub's UI will show this as a committable suggestion
   result += `\n\n\`\`\`suggestion\n${addedLines.join('\n')}\n\`\`\``;
 
   return result;
