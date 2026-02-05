@@ -80,7 +80,7 @@ function renderReview(
     let body = `**${SEVERITY_EMOJI[finding.severity]} ${escapeHtml(finding.title)}**${confidenceNote}\n\n${escapeHtml(finding.description)}`;
 
     if (includeSuggestions && finding.suggestedFix) {
-      body += `\n\n${renderSuggestion(finding.suggestedFix.description, finding.suggestedFix.diff)}`;
+      body += `\n\n${renderSuggestion(finding.suggestedFix.diff)}`;
     }
 
     // Add attribution footnote with skill name, severity, and confidence
@@ -145,21 +145,12 @@ function determineReviewEvent(
 }
 
 /**
- * Render a suggested fix with both a diff preview and a GitHub suggestion block.
- *
- * GitHub suggestion syntax: The ```suggestion block must contain only the replacement
- * content (no diff markers). When the comment is attached to specific line(s), GitHub
- * will offer a "Commit suggestion" button that replaces those lines with the suggestion.
+ * Render a suggested fix as a GitHub suggestion block.
  *
  * @see https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/commenting-on-a-pull-request#adding-line-comments-to-a-pull-request
  */
-function renderSuggestion(description: string, diff: string): string {
+function renderSuggestion(diff: string): string {
   const lines = diff.split('\n');
-
-  // Extract removed lines (what's being replaced) - skip diff header lines
-  const removedLines = lines
-    .filter((line) => line.startsWith('-') && !line.startsWith('---'))
-    .map((line) => line.slice(1));
 
   // Extract added lines (the replacement content) - skip diff header lines
   const addedLines = lines
@@ -167,21 +158,10 @@ function renderSuggestion(description: string, diff: string): string {
     .map((line) => line.slice(1));
 
   if (addedLines.length === 0) {
-    return `**Suggested fix:** ${escapeHtml(description)}`;
+    return '';
   }
 
-  let result = `**Suggested fix:** ${escapeHtml(description)}`;
-
-  // Show a diff block so reviewers can see what's being removed vs added
-  if (removedLines.length > 0) {
-    result += `\n\n\`\`\`diff\n${removedLines.map((l) => `-${l}`).join('\n')}\n${addedLines.map((l) => `+${l}`).join('\n')}\n\`\`\``;
-  }
-
-  // GitHub suggestion block - contains only the replacement content (no diff markers)
-  // GitHub's UI will show this as a committable suggestion
-  result += `\n\n\`\`\`suggestion\n${addedLines.join('\n')}\n\`\`\``;
-
-  return result;
+  return `\`\`\`suggestion\n${addedLines.join('\n')}\n\`\`\``;
 }
 
 function renderHiddenFindingsLink(hiddenCount: number, checkRunUrl: string): string {
