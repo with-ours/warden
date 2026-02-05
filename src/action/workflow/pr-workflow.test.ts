@@ -42,7 +42,13 @@ vi.mock('../../output/dedup.js', async () => {
 // Mock fix evaluation - has LLM calls
 vi.mock('../../output/fix-evaluation/index.js', () => ({
   evaluateFixAttempts: vi.fn(() =>
-    Promise.resolve({ toResolve: [], toReply: [], skipped: 0, evaluated: 0 })
+    Promise.resolve({
+      toResolve: [],
+      toReply: [],
+      skipped: 0,
+      evaluated: 0,
+      usage: { inputTokens: 0, outputTokens: 0, costUSD: 0 },
+    })
   ),
   postThreadReply: vi.fn(() => Promise.resolve()),
 }));
@@ -536,6 +542,7 @@ describe('runPRWorkflow', () => {
         ],
         skipped: 0,
         evaluated: 1,
+        usage: { inputTokens: 100, outputTokens: 50, costUSD: 0.0003 },
       });
 
       await runPRWorkflow(

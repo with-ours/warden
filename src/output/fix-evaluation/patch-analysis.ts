@@ -52,6 +52,10 @@ export function didPatchTouchArea(
 /**
  * Find comments that have relevant patches (patches that touch the comment's location).
  * Returns a map of comment ID to the patch content.
+ *
+ * Uses `currentLine` (GitHub's tracked position) when available, falling back to
+ * `line` (original marker position). This handles line drift when earlier changes
+ * shift code positions.
  */
 export function findRelevantPatches(
   patches: Map<string, string>,
@@ -66,7 +70,9 @@ export function findRelevantPatches(
       continue;
     }
 
-    if (didPatchTouchArea(patch, comment.line, threshold)) {
+    // Prefer currentLine (GitHub's tracked position) over line (original marker)
+    const targetLine = comment.currentLine ?? comment.line;
+    if (didPatchTouchArea(patch, targetLine, threshold)) {
       relevantPatches.set(comment.id, patch);
     }
   }

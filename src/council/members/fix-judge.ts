@@ -7,8 +7,8 @@ import { fetchFileLines } from '../../output/fix-evaluation/github-actions.js';
 
 export interface FixJudgeInput {
   comment: ExistingComment;
-  beforeCode: string;
-  afterCode: string;
+  changedFiles: string[];
+  codeBeforeFix: string;
 }
 
 /**
@@ -20,6 +20,8 @@ export interface FixJudgeContext extends ToolContext {
   repo: string;
   previousSha: string;
   currentSha: string;
+  /** File patches for get_file_diff tool - maps file path to unified diff */
+  patches?: Map<string, string>;
 }
 
 /**
@@ -76,6 +78,29 @@ const getFileAtCommit: CouncilTool<FixJudgeInput> = {
   },
 };
 
+/**
+ * Input schema for the get_file_diff tool.
+ */
+const GetFileDiffInputSchema = z.object({
+  path: z.string().describe('File path to get diff for'),
+});
+
+/**
+ * Tool to get the unified diff for a file.
+ * Shows what changed between the two commits.
+ */
+const getFileDiff: CouncilTool<FixJudgeInput> = {
+  name: 'get_file_diff',
+  description: 'Get the unified diff showing what changed in a file between the two commits.',
+  inputSchema: GetFileDiffInputSchema,
+  execute: async (toolInput, _memberInput, context) => {
+    const { path } = toolInput as z.infer<typeof GetFileDiffInputSchema>;
+    const ctx = context as FixJudgeContext;
+    const patch = ctx.patches?.get(path);
+    return patch ?? 'No changes found for this file';
+  },
+};
+
 export const FixStatusSchema = z.enum(['not_attempted', 'attempted_failed', 'resolved']);
 export type FixStatus = z.infer<typeof FixStatusSchema>;
 
@@ -93,37 +118,39 @@ export const fixJudge = defineCouncilMember<FixJudgeInput, FixJudgeVerdict>({
   name: 'fix-judge',
   description: 'Judges whether a code change addressed a reported issue and if the fix succeeded',
 
-  buildPrompt: ({ comment, beforeCode, afterCode }) => `You are judging whether a code change fixed a specific issue that was reported in code review.
+  buildPrompt: ({ comment, changedFiles, codeBeforeFix }) => `You are judging whether a code change fixed a specific issue that was reported in code review.
 
-Your job is to determine if the ISSUE DESCRIBED was addressed, not whether code at a particular line changed. The title and description below define the issue. The location is approximate and may be off by a few lines.
-
-## The Issue
+## The Original Report
 **Title:** ${comment.title}
-**Description:** ${comment.description}
-**Approximate location:** ${comment.path} near line ${comment.line}
+**Location:** ${comment.path} near line ${comment.line}
 
-## Code BEFORE This Commit
-\`\`\`
-${beforeCode}
-\`\`\`
+**Full comment (includes suggested fix if provided):**
+${comment.description}
 
-## Code AFTER This Commit
+## Code at Issue Location (before this commit)
 \`\`\`
-${afterCode}
+${codeBeforeFix}
 \`\`\`
 
-## Verdict
-Based on the before/after code, determine if the issue described above was addressed:
+## Files Changed in This Commit
+${changedFiles.join('\n')}
 
-1. **not_attempted** - No changes related to this issue. The code that would need to change is identical.
+## Your Task
+Determine if these changes addressed the issue. Use tools to explore:
+- get_file_diff(path): See what changed in a file
+- get_file_at_commit(path, "before"|"after", startLine?, endLine?): See additional context
+
+The fix may be at the original location, elsewhere in the file, or in a related file.
+If a suggested fix was provided, check if it was applied (or an equivalent fix).
+
+Return ONLY a JSON object: {"status": "not_attempted|attempted_failed|resolved", "reasoning": "brief explanation"}
+
+Verdict meanings:
+1. **not_attempted** - No changes related to this issue were made.
 2. **attempted_failed** - Changes were made to address this issue but the fix is incorrect or incomplete.
-3. **resolved** - The issue described is fixed.
+3. **resolved** - The issue described is fixed.`,
 
-If you need additional context (imports, related functions, etc.), use the get_file_at_commit tool.
-
-Return ONLY a JSON object: {"status": "not_attempted|attempted_failed|resolved", "reasoning": "brief explanation"}`,
-
-  tools: [getFileAtCommit],
-  maxToolIterations: 2,
+  tools: [getFileDiff, getFileAtCommit],
+  maxToolIterations: 5,
   schema: FixJudgeVerdictSchema,
 });

@@ -1,16 +1,37 @@
 import type { Octokit } from '@octokit/rest';
 import type { ExistingComment } from '../dedup.js';
 import { generateContentHash } from '../dedup.js';
-import type { Finding } from '../../types/index.js';
+import type { Finding, UsageStats } from '../../types/index.js';
 import type { FixEvaluationContext, FixEvaluationResult } from './types.js';
-import { findRelevantPatches } from './patch-analysis.js';
 import { evaluateFix } from './llm-evaluator.js';
-import {
-  fetchFollowUpPatches,
-  fetchFileContent,
-  formatFailedFixReply,
-} from './github-actions.js';
+import { fetchFollowUpPatches, fetchFileContent, formatFailedFixReply } from './github-actions.js';
 import type { FixJudgeContext } from '../../council/index.js';
+
+/**
+ * Create empty usage stats for initialization.
+ */
+function emptyUsage(): UsageStats {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    costUSD: 0,
+  };
+}
+
+/**
+ * Add two usage stats together.
+ */
+function addUsage(a: UsageStats, b: UsageStats): UsageStats {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadInputTokens: (a.cacheReadInputTokens ?? 0) + (b.cacheReadInputTokens ?? 0),
+    cacheCreationInputTokens: (a.cacheCreationInputTokens ?? 0) + (b.cacheCreationInputTokens ?? 0),
+    costUSD: a.costUSD + b.costUSD,
+  };
+}
 
 /** Maximum comments to evaluate per run */
 const MAX_EVALUATIONS = 20;
@@ -19,20 +40,23 @@ const MAX_EVALUATIONS = 20;
 const CONTEXT_LINES = 10;
 
 /**
- * Fetch code snippets at a finding location from both commits.
- * Returns before/after code with line numbers.
+ * Fetch code snippet at a finding location from before the fix.
+ * Returns code with line numbers.
+ *
+ * Uses `currentLine` (GitHub's tracked position) when available to handle line drift.
  */
-async function fetchCodeSnippets(
+async function fetchCodeBeforeFix(
   octokit: Octokit,
   owner: string,
   repo: string,
   comment: ExistingComment,
   previousSha: string,
-  currentSha: string,
   contextLines = CONTEXT_LINES
-): Promise<{ beforeCode: string; afterCode: string }> {
-  const startLine = Math.max(1, comment.line - contextLines);
-  const endLine = comment.line + contextLines;
+): Promise<string> {
+  // Prefer currentLine (GitHub's tracked position) over line (original marker)
+  const targetLine = comment.currentLine ?? comment.line;
+  const startLine = Math.max(1, targetLine - contextLines);
+  const endLine = targetLine + contextLines;
 
   const extractLines = (content: string, start: number, end: number): string => {
     const lines = content.split('\n');
@@ -43,52 +67,13 @@ async function fetchCodeSnippets(
   };
 
   try {
-    const [beforeContent, afterContent] = await Promise.all([
-      fetchFileContent(octokit, owner, repo, comment.path, previousSha),
-      fetchFileContent(octokit, owner, repo, comment.path, currentSha),
-    ]);
-
-    return {
-      beforeCode: extractLines(beforeContent, startLine, endLine),
-      afterCode: extractLines(afterContent, startLine, endLine),
-    };
+    const content = await fetchFileContent(octokit, owner, repo, comment.path, previousSha);
+    return extractLines(content, startLine, endLine);
   } catch (error) {
-    // If file doesn't exist at one commit (new/deleted file), handle gracefully
     const errorMessage = error instanceof Error ? error.message : String(error);
-
     if (errorMessage.includes('Not Found')) {
-      // Try to fetch whichever commit has the file
-      try {
-        const afterContent = await fetchFileContent(
-          octokit,
-          owner,
-          repo,
-          comment.path,
-          currentSha
-        );
-        return {
-          beforeCode: '(file did not exist)',
-          afterCode: extractLines(afterContent, startLine, endLine),
-        };
-      } catch {
-        try {
-          const beforeContent = await fetchFileContent(
-            octokit,
-            owner,
-            repo,
-            comment.path,
-            previousSha
-          );
-          return {
-            beforeCode: extractLines(beforeContent, startLine, endLine),
-            afterCode: '(file was deleted)',
-          };
-        } catch {
-          throw new Error(`File "${comment.path}" not found at either commit`);
-        }
-      }
+      return '(file did not exist before this commit)';
     }
-
     throw error;
   }
 }
@@ -130,14 +115,14 @@ function wasReDetected(comment: ExistingComment, currentFindings: Finding[]): bo
 }
 
 /**
- * Evaluate fix attempts for comments with follow-up patches.
+ * Evaluate fix attempts for all unresolved comments.
  *
  * Flow:
  * 1. Fetch patches between previous and current HEAD
- * 2. Filter comments to those touched by patches
- * 3. For each touched comment, judge fix status (single LLM call)
- * 4. Cross-check against current findings for re-detection
- * 5. Categorize into toResolve and toReply
+ * 2. For each unresolved comment, let judge explore changes with tools
+ * 3. Cross-check against current findings for re-detection
+ * 4. Categorize into toResolve and toReply
+ * 5. Accumulate usage stats from all evaluations
  */
 export async function evaluateFixAttempts(
   octokit: Octokit,
@@ -151,12 +136,11 @@ export async function evaluateFixAttempts(
     toReply: [],
     skipped: 0,
     evaluated: 0,
+    usage: emptyUsage(),
   };
 
   // Filter to unresolved Warden comments only
-  const unresolvedComments = comments.filter(
-    (c) => c.isWarden && !c.isResolved && c.threadId
-  );
+  const unresolvedComments = comments.filter((c) => c.isWarden && !c.isResolved && c.threadId);
 
   if (unresolvedComments.length === 0) {
     return result;
@@ -176,63 +160,58 @@ export async function evaluateFixAttempts(
     return result;
   }
 
-  // Find comments that have relevant patches
-  const relevantPatches = findRelevantPatches(patches, unresolvedComments);
-
-  // Track comments not touched by patches
-  result.skipped = unresolvedComments.length - relevantPatches.size;
-
   // Limit evaluations to avoid excessive API calls
-  const commentsToEvaluate = unresolvedComments
-    .filter((c) => relevantPatches.has(c.id))
-    .slice(0, MAX_EVALUATIONS);
+  const commentsToEvaluate = unresolvedComments.slice(0, MAX_EVALUATIONS);
 
-  if (relevantPatches.size > MAX_EVALUATIONS) {
+  if (unresolvedComments.length > MAX_EVALUATIONS) {
+    result.skipped = unresolvedComments.length - MAX_EVALUATIONS;
     console.log(
-      `Limiting fix evaluation to ${MAX_EVALUATIONS} of ${relevantPatches.size} touched comments`
+      `Limiting fix evaluation to ${MAX_EVALUATIONS} of ${unresolvedComments.length} unresolved comments`
     );
   }
 
-  // Build tool context for fix-judge
+  // Build tool context for fix-judge (includes patches for get_file_diff tool)
   const toolContext: FixJudgeContext = {
     octokit,
     owner: context.owner,
     repo: context.repo,
     previousSha: context.previousSha,
     currentSha: context.currentSha,
+    patches,
   };
 
-  // Evaluate each comment
+  const changedFiles = [...patches.keys()];
+
+  // Evaluate each comment, accumulating usage
   for (const comment of commentsToEvaluate) {
     result.evaluated++;
 
-    // Fetch code snippets at the finding location
-    let beforeCode: string;
-    let afterCode: string;
+    // Fetch code at the issue location before this commit
+    let codeBeforeFix: string;
     try {
-      const snippets = await fetchCodeSnippets(
+      codeBeforeFix = await fetchCodeBeforeFix(
         octokit,
         context.owner,
         context.repo,
         comment,
-        context.previousSha,
-        context.currentSha
+        context.previousSha
       );
-      beforeCode = snippets.beforeCode;
-      afterCode = snippets.afterCode;
     } catch (error) {
-      console.warn(`Failed to fetch code snippets for ${comment.path}:${comment.line}: ${error}`);
+      console.warn(`Failed to fetch code for ${comment.path}:${comment.line}: ${error}`);
       continue;
     }
 
-    // Judge fix status
-    const verdict = await evaluateFix(comment, beforeCode, afterCode, {
-      apiKey,
-      toolContext,
-    });
+    // Judge fix status - let it explore with tools
+    const evalResult = await evaluateFix(
+      { comment, changedFiles, codeBeforeFix },
+      { apiKey, toolContext }
+    );
 
-    if (verdict.status === 'not_attempted') {
-      // Code touched the area but wasn't attempting to fix this issue
+    // Accumulate usage from this evaluation
+    result.usage = addUsage(result.usage, evalResult.usage);
+
+    if (evalResult.verdict.status === 'not_attempted') {
+      // Changes weren't related to this issue
       continue;
     }
 
@@ -252,14 +231,14 @@ export async function evaluateFixAttempts(
       continue;
     }
 
-    if (verdict.status === 'resolved') {
+    if (evalResult.verdict.status === 'resolved') {
       // Fix succeeded and issue not re-detected
       result.toResolve.push(comment);
     } else {
       // attempted_failed: fix attempted but didn't succeed
       result.toReply.push({
         comment,
-        replyBody: formatFailedFixReply(context.currentSha, verdict.reasoning),
+        replyBody: formatFailedFixReply(context.currentSha, evalResult.verdict.reasoning),
         commitSha: context.currentSha,
       });
     }

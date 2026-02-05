@@ -23,22 +23,17 @@ const mockComment: ExistingComment = {
   threadId: 'thread-1',
 };
 
-const mockBeforeCode = `40: function getUser(id: string) {
+const mockChangedFiles = ['src/db.ts', 'src/utils.ts'];
+
+const mockCodeBeforeFix = `40: function getUser(id: string) {
 41:   // Get user by ID
 42:   const query = \`SELECT * FROM users WHERE id = '\${id}'\`;
 43:   return db.query(query);
 44: }`;
 
-const mockAfterCode = `40: function getUser(id: string) {
-41:   // Get user by ID
-42:   const query = 'SELECT * FROM users WHERE id = ?';
-43:   const params = [id];
-44:   return db.query(query, params);
-45: }`;
-
 describe('buildFixPrompt', () => {
   it('includes comment details', () => {
-    const prompt = buildFixPrompt(mockComment, mockBeforeCode, mockAfterCode);
+    const prompt = buildFixPrompt(mockComment, mockChangedFiles, mockCodeBeforeFix);
 
     expect(prompt).toContain('SQL Injection Vulnerability');
     expect(prompt).toContain('User input is passed directly');
@@ -46,17 +41,18 @@ describe('buildFixPrompt', () => {
     expect(prompt).toContain('near line 42');
   });
 
-  it('includes before and after code', () => {
-    const prompt = buildFixPrompt(mockComment, mockBeforeCode, mockAfterCode);
+  it('includes code before fix and changed files', () => {
+    const prompt = buildFixPrompt(mockComment, mockChangedFiles, mockCodeBeforeFix);
 
-    expect(prompt).toContain('Code BEFORE');
-    expect(prompt).toContain('Code AFTER');
-    expect(prompt).toContain(mockBeforeCode);
-    expect(prompt).toContain(mockAfterCode);
+    expect(prompt).toContain('Code at Issue Location');
+    expect(prompt).toContain(mockCodeBeforeFix);
+    expect(prompt).toContain('Files Changed');
+    expect(prompt).toContain('src/db.ts');
+    expect(prompt).toContain('src/utils.ts');
   });
 
   it('describes all three status options', () => {
-    const prompt = buildFixPrompt(mockComment, mockBeforeCode, mockAfterCode);
+    const prompt = buildFixPrompt(mockComment, mockChangedFiles, mockCodeBeforeFix);
 
     expect(prompt).toContain('not_attempted');
     expect(prompt).toContain('attempted_failed');
@@ -143,69 +139,74 @@ describe('evaluateFix', () => {
     mockCreate.mockReset();
   });
 
+  /** Mock usage to include in responses */
+  const mockUsage = { input_tokens: 100, output_tokens: 50 };
+
+  const mockInput = {
+    comment: mockComment,
+    changedFiles: mockChangedFiles,
+    codeBeforeFix: mockCodeBeforeFix,
+  };
+
   it('returns resolved status when fix succeeds', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"status": "resolved", "reasoning": "Fix correctly addresses the issue"}' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
-    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
-      apiKey: 'test-api-key',
-    });
+    const result = await evaluateFix(mockInput, { apiKey: 'test-api-key' });
 
-    expect(result.status).toBe('resolved');
-    expect(result.reasoning).toBe('Fix correctly addresses the issue');
+    expect(result.verdict.status).toBe('resolved');
+    expect(result.verdict.reasoning).toBe('Fix correctly addresses the issue');
+    expect(result.usage.inputTokens).toBeGreaterThan(0);
   });
 
   it('returns attempted_failed when fix is incorrect', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"status": "attempted_failed", "reasoning": "Edge case not handled"}' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
-    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
-      apiKey: 'test-api-key',
-    });
+    const result = await evaluateFix(mockInput, { apiKey: 'test-api-key' });
 
-    expect(result.status).toBe('attempted_failed');
-    expect(result.reasoning).toContain('Edge case');
+    expect(result.verdict.status).toBe('attempted_failed');
+    expect(result.verdict.reasoning).toContain('Edge case');
   });
 
   it('returns not_attempted when code is unchanged', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"status": "not_attempted", "reasoning": "Changes unrelated to the issue"}' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
-    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
-      apiKey: 'test-api-key',
-    });
+    const result = await evaluateFix(mockInput, { apiKey: 'test-api-key' });
 
-    expect(result.status).toBe('not_attempted');
+    expect(result.verdict.status).toBe('not_attempted');
   });
 
   it('returns fallback on API error', async () => {
     mockCreate.mockRejectedValue(new Error('API rate limit'));
 
-    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
-      apiKey: 'test-api-key',
-    });
+    const result = await evaluateFix(mockInput, { apiKey: 'test-api-key' });
 
-    expect(result.status).toBe('not_attempted');
-    expect(result.reasoning).toBe('Evaluation failed');
+    expect(result.verdict.status).toBe('not_attempted');
+    expect(result.verdict.reasoning).toBe('Evaluation failed');
+    expect(result.usedFallback).toBe(true);
   });
 
   it('returns fallback on invalid response', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: 'No JSON here!' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
-    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
-      apiKey: 'test-api-key',
-    });
+    const result = await evaluateFix(mockInput, { apiKey: 'test-api-key' });
 
-    expect(result.status).toBe('not_attempted');
-    expect(result.reasoning).toBe('Evaluation failed');
+    expect(result.verdict.status).toBe('not_attempted');
+    expect(result.verdict.reasoning).toBe('Evaluation failed');
   });
 });

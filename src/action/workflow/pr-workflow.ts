@@ -314,11 +314,14 @@ export async function runPRWorkflow(
       }
 
       if (fixEvaluation.evaluated > 0) {
+        const usageStr = fixEvaluation.usage.inputTokens > 0
+          ? `, ${fixEvaluation.usage.inputTokens + fixEvaluation.usage.outputTokens} tokens ($${fixEvaluation.usage.costUSD.toFixed(4)})`
+          : '';
         console.log(
           `Fix evaluation: ${fixEvaluation.evaluated} evaluated, ` +
           `${fixEvaluation.toResolve.length} resolved, ` +
           `${fixEvaluation.toReply.length} need attention, ` +
-          `${fixEvaluation.skipped} skipped`
+          `${fixEvaluation.skipped} skipped${usageStr}`
         );
       }
     } catch (error) {

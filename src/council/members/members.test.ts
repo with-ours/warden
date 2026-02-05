@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { fixJudge, duplicateJudge, councilMembers, listCouncilMembers } from './index.js';
+import type { FixJudgeContext } from './fix-judge.js';
 
 describe('council members', () => {
   describe('fixJudge', () => {
@@ -8,7 +9,7 @@ describe('council members', () => {
       expect(fixJudge.description).toContain('addressed');
     });
 
-    it('builds prompt with comment and before/after code', () => {
+    it('builds prompt with comment, changed files, and code before fix', () => {
       const comment = {
         id: 1,
         path: 'src/db.ts',
@@ -17,30 +18,84 @@ describe('council members', () => {
         description: 'User input passed to query',
         contentHash: 'abc',
       };
-      const beforeCode = '42: const query = `SELECT * FROM users WHERE id = ${id}`;';
-      const afterCode = '42: const query = db.prepare("SELECT * FROM users WHERE id = ?").bind(id);';
+      const changedFiles = ['src/db.ts', 'src/utils.ts'];
+      const codeBeforeFix = '42: const query = `SELECT * FROM users WHERE id = ${id}`;';
 
-      const prompt = fixJudge.buildPrompt({ comment, beforeCode, afterCode });
+      const prompt = fixJudge.buildPrompt({ comment, changedFiles, codeBeforeFix });
 
       expect(prompt).toContain('SQL Injection');
       expect(prompt).toContain('src/db.ts');
       expect(prompt).toContain('near line 42');
-      expect(prompt).toContain(beforeCode);
-      expect(prompt).toContain(afterCode);
-      expect(prompt).toContain('Code BEFORE');
-      expect(prompt).toContain('Code AFTER');
+      expect(prompt).toContain(codeBeforeFix);
+      expect(prompt).toContain('src/utils.ts');
+      expect(prompt).toContain('Files Changed');
       expect(prompt).toContain('not_attempted');
       expect(prompt).toContain('attempted_failed');
       expect(prompt).toContain('resolved');
+      expect(prompt).toContain('get_file_diff');
+      expect(prompt).toContain('get_file_at_commit');
     });
 
-    it('has tools defined', () => {
+    it('has both tools defined', () => {
       expect(fixJudge.tools).toBeDefined();
-      expect(fixJudge.tools).toHaveLength(1);
+      expect(fixJudge.tools).toHaveLength(2);
       const tools = fixJudge.tools;
-      if (tools && tools[0]) {
-        expect(tools[0].name).toBe('get_file_at_commit');
-      }
+      const toolNames = tools?.map((t) => t.name) ?? [];
+      expect(toolNames).toContain('get_file_diff');
+      expect(toolNames).toContain('get_file_at_commit');
+    });
+
+    it('has increased maxToolIterations for exploration', () => {
+      expect(fixJudge.maxToolIterations).toBe(5);
+    });
+
+    describe('get_file_diff tool', () => {
+      it('returns patch content from context', async () => {
+        const tool = fixJudge.tools?.find((t) => t.name === 'get_file_diff');
+        expect(tool).toBeDefined();
+
+        const patches = new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+fixed code']]);
+        const context: Partial<FixJudgeContext> = { patches };
+
+        const result = await tool!.execute(
+          { path: 'src/db.ts' },
+          { comment: {} as never, changedFiles: [], codeBeforeFix: '' },
+          context as FixJudgeContext
+        );
+
+        expect(result).toBe('@@ -40,5 +40,7 @@\n+fixed code');
+      });
+
+      it('returns message when file not in patches', async () => {
+        const tool = fixJudge.tools?.find((t) => t.name === 'get_file_diff');
+        expect(tool).toBeDefined();
+
+        const patches = new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]);
+        const context: Partial<FixJudgeContext> = { patches };
+
+        const result = await tool!.execute(
+          { path: 'src/other.ts' },
+          { comment: {} as never, changedFiles: [], codeBeforeFix: '' },
+          context as FixJudgeContext
+        );
+
+        expect(result).toBe('No changes found for this file');
+      });
+
+      it('returns message when patches not in context', async () => {
+        const tool = fixJudge.tools?.find((t) => t.name === 'get_file_diff');
+        expect(tool).toBeDefined();
+
+        const context: Partial<FixJudgeContext> = {};
+
+        const result = await tool!.execute(
+          { path: 'src/db.ts' },
+          { comment: {} as never, changedFiles: [], codeBeforeFix: '' },
+          context as FixJudgeContext
+        );
+
+        expect(result).toBe('No changes found for this file');
+      });
     });
   });
 

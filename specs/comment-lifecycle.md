@@ -99,9 +99,12 @@ Findings match existing comments if:
 
 A Warden comment is automatically resolved when:
 
-1. **Issue is fixed**: No matching finding in current analysis
-2. **File removed**: The commented file no longer exists in the PR
-3. **File out of scope**: File was reverted or excluded from analysis
+1. **Issue is fixed**: The fix judge determines changes addressed the issue (see [Fix Evaluation](fix-evaluation.md))
+2. **No longer detected**: No matching finding in current analysis
+3. **File removed**: The commented file no longer exists in the PR
+4. **File out of scope**: File was reverted or excluded from analysis
+
+On follow-up commits, Warden evaluates all unresolved comments (up to 20) using the fix judge. The judge examines the changes and determines if each issue was addressed, regardless of where the fix occurs.
 
 ### Safety Guards
 
@@ -191,12 +194,24 @@ Result:
 - No Warden comment posted
 ```
 
-### Issue Fixed
+### Issue Fixed (Direct)
 
 ```
 Run 1: Warden posts "SQL injection" at db.ts:42
-Developer fixes the vulnerability
-Run 2: Warden finds no issues
+Developer fixes the vulnerability at db.ts:42
+Run 2: Fix judge examines the diff and confirms fix
+
+Result:
+- Original comment marked resolved
+- PR approved (if previously CHANGES_REQUESTED)
+```
+
+### Issue Fixed (Indirect)
+
+```
+Run 1: Warden posts "SQL injection" at db.ts:42
+Developer adds sanitization in utils.ts and imports it
+Run 2: Fix judge explores changes, finds the fix in utils.ts
 
 Result:
 - Original comment marked resolved
@@ -219,6 +234,15 @@ Result:
 ---
 
 ## Limitations
+
+### Fix Detection
+
+The fix judge evaluates all unresolved comments on each push, but:
+- Maximum 20 comments evaluated per push (to limit API costs)
+- Judge has up to 5 tool calls per evaluation
+- Complex fixes spanning many files may not be fully understood
+
+If the judge incorrectly marks something as fixed, re-detection provides a safety net: if the same issue appears in the current analysis, the comment stays open.
 
 ### Location Tolerance
 

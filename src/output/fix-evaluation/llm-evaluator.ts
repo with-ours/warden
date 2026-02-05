@@ -1,6 +1,6 @@
 import { conveneWithFallback, fixJudge, extractAndParseJson } from '../../council/index.js';
 import type { ExistingComment } from '../dedup.js';
-import type { FixJudgeVerdict, FixJudgeContext, ConveneOptions } from '../../council/index.js';
+import type { FixJudgeVerdict, FixJudgeContext, ConveneOptions, ConveneWithFallbackResult } from '../../council/index.js';
 
 export type { FixJudgeVerdict, FixStatus } from '../../council/index.js';
 export { fixJudge };
@@ -10,10 +10,10 @@ export { fixJudge };
  */
 export function buildFixPrompt(
   comment: ExistingComment,
-  beforeCode: string,
-  afterCode: string
+  changedFiles: string[],
+  codeBeforeFix: string
 ): string {
-  return fixJudge.buildPrompt({ comment, beforeCode, afterCode });
+  return fixJudge.buildPrompt({ comment, changedFiles, codeBeforeFix });
 }
 
 /**
@@ -45,15 +45,28 @@ export interface EvaluateFixOptions {
 }
 
 /**
- * Evaluate the fix status by comparing before/after code against a comment.
- * Returns the status: not_attempted, attempted_failed, or resolved.
+ * Input for fix evaluation.
+ */
+export interface FixEvaluationInput {
+  comment: ExistingComment;
+  changedFiles: string[];
+  codeBeforeFix: string;
+}
+
+/**
+ * Result of evaluating a fix, including the verdict and usage stats.
+ */
+export type FixEvaluationResult = ConveneWithFallbackResult<FixJudgeVerdict>;
+
+/**
+ * Evaluate the fix status by letting the judge explore the changes.
+ * Returns the verdict (not_attempted, attempted_failed, or resolved) along with
+ * usage stats accumulated across all API calls including tool iterations.
  */
 export function evaluateFix(
-  comment: ExistingComment,
-  beforeCode: string,
-  afterCode: string,
+  input: FixEvaluationInput,
   options: EvaluateFixOptions
-): Promise<FixJudgeVerdict> {
+): Promise<FixEvaluationResult> {
   const conveneOptions: ConveneOptions = {
     apiKey: options.apiKey,
     toolContext: options.toolContext,
@@ -61,7 +74,7 @@ export function evaluateFix(
 
   return conveneWithFallback(
     fixJudge,
-    { comment, beforeCode, afterCode },
+    input,
     conveneOptions,
     { status: 'not_attempted', reasoning: 'Evaluation failed' }
   );

@@ -18,7 +18,14 @@ export interface WardenMarker {
 export interface ExistingComment {
   id: number;
   path: string;
+  /** Original line number from marker (used for deduplication) */
   line: number;
+  /**
+   * Current line position as tracked by GitHub (used for fix evaluation).
+   * GitHub updates this as lines shift due to other changes.
+   * May be undefined if GitHub can't track the position (e.g., line was deleted).
+   */
+  currentLine?: number;
   title: string;
   description: string;
   contentHash: string;
@@ -321,6 +328,8 @@ export async function fetchExistingComments(
         id: firstComment.databaseId,
         path: marker?.path ?? firstComment.path,
         line: marker?.line ?? firstComment.line ?? firstComment.originalLine ?? 0,
+        // GitHub tracks the current position as lines shift; use for fix evaluation
+        currentLine: firstComment.line ?? firstComment.originalLine ?? undefined,
         title,
         description,
         contentHash: marker?.contentHash ?? generateContentHash(title, description),

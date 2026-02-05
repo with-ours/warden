@@ -17,6 +17,9 @@ vi.mock('@anthropic-ai/sdk', () => {
 // Import after mocking
 const { convene, conveneWithFallback } = await import('./convene.js');
 
+/** Mock usage to include in responses */
+const mockUsage = { input_tokens: 100, output_tokens: 50 };
+
 const testMember = defineCouncilMember({
   name: 'test-member',
   description: 'A test council member',
@@ -36,6 +39,7 @@ describe('convene', () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"result": true, "reason": "looks good"}' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
     const result = await convene(testMember, { value: 'test' }, { apiKey: 'test-key' });
@@ -51,6 +55,7 @@ describe('convene', () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: 'Here is my analysis:\n{"result": false, "reason": "issue found"}\nHope this helps!' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
     const result = await convene(testMember, { value: 'test' }, { apiKey: 'test-key' });
@@ -65,6 +70,7 @@ describe('convene', () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: 'No JSON here!' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
     const result = await convene(testMember, { value: 'test' }, { apiKey: 'test-key' });
@@ -79,6 +85,7 @@ describe('convene', () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"wrong": "shape"}' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
     const result = await convene(testMember, { value: 'test' }, { apiKey: 'test-key' });
@@ -104,6 +111,7 @@ describe('convene', () => {
     mockCreate.mockResolvedValue({
       content: [],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
     const result = await convene(testMember, { value: 'test' }, { apiKey: 'test-key' });
@@ -150,11 +158,13 @@ describe('convene with tools', () => {
           { type: 'tool_use', id: 'tool-1', name: 'get_data', input: { key: 'test' } },
         ],
         stop_reason: 'tool_use',
+        usage: mockUsage,
       })
       // Second call: model returns verdict after seeing tool result
       .mockResolvedValueOnce({
         content: [{ type: 'text', text: '{"result": true, "reason": "Data confirmed it"}' }],
         stop_reason: 'end_turn',
+        usage: mockUsage,
       });
 
     const result = await convene(toolMember, { value: 'test' }, { apiKey: 'test-key' });
@@ -185,6 +195,7 @@ describe('convene with tools', () => {
         { type: 'tool_use', id: 'tool-1', name: 'get_data', input: { key: 'test' } },
       ],
       stop_reason: 'tool_use',
+      usage: mockUsage,
     });
 
     const result = await convene(toolMember, { value: 'test' }, { apiKey: 'test-key' });
@@ -217,10 +228,12 @@ describe('convene with tools', () => {
       .mockResolvedValueOnce({
         content: [{ type: 'tool_use', id: 'tool-1', name: 'use_context', input: {} }],
         stop_reason: 'tool_use',
+        usage: mockUsage,
       })
       .mockResolvedValueOnce({
         content: [{ type: 'text', text: '{"result": "got it"}' }],
         stop_reason: 'end_turn',
+        usage: mockUsage,
       });
 
     await convene(
@@ -249,13 +262,16 @@ describe('conveneWithFallback', () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"result": true, "reason": "success"}' }],
       stop_reason: 'end_turn',
+      usage: mockUsage,
     });
 
     const fallback = { result: false, reason: 'fallback' };
     const result = await conveneWithFallback(testMember, { value: 'test' }, { apiKey: 'test-key' }, fallback);
 
-    expect(result.result).toBe(true);
-    expect(result.reason).toBe('success');
+    expect(result.verdict.result).toBe(true);
+    expect(result.verdict.reason).toBe('success');
+    expect(result.usedFallback).toBe(false);
+    expect(result.usage.inputTokens).toBeGreaterThan(0);
   });
 
   it('returns fallback on failure', async () => {
@@ -264,7 +280,8 @@ describe('conveneWithFallback', () => {
     const fallback = { result: false, reason: 'fallback' };
     const result = await conveneWithFallback(testMember, { value: 'test' }, { apiKey: 'test-key' }, fallback);
 
-    expect(result.result).toBe(false);
-    expect(result.reason).toBe('fallback');
+    expect(result.verdict.result).toBe(false);
+    expect(result.verdict.reason).toBe('fallback');
+    expect(result.usedFallback).toBe(true);
   });
 });

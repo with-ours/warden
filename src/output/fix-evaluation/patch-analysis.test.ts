@@ -204,6 +204,45 @@ describe('findRelevantPatches', () => {
     // Smaller threshold (5) should not include
     expect(findRelevantPatches(patches, comments, 5).has(1)).toBe(false);
   });
+
+  it('uses currentLine over line when available (handles line drift)', () => {
+    // Patch at line 70
+    const driftedPatches = new Map([['src/db.ts', '@@ -70,5 +70,7 @@\n+code']]);
+
+    // Comment with drifted lines: original at 50, now at 70
+    const comments: ExistingComment[] = [
+      {
+        id: 1,
+        path: 'src/db.ts',
+        line: 50, // Original marker position
+        currentLine: 70, // GitHub's tracked current position
+        title: 'Issue',
+        description: 'Desc',
+        contentHash: 'abc',
+      },
+    ];
+
+    // Should match because we use currentLine (70) not line (50)
+    const relevant = findRelevantPatches(driftedPatches, comments);
+    expect(relevant.has(1)).toBe(true);
+  });
+
+  it('falls back to line when currentLine is undefined', () => {
+    const comments: ExistingComment[] = [
+      {
+        id: 1,
+        path: 'src/db.ts',
+        line: 42,
+        currentLine: undefined, // Not tracked
+        title: 'Issue',
+        description: 'Desc',
+        contentHash: 'abc',
+      },
+    ];
+
+    const relevant = findRelevantPatches(patches, comments);
+    expect(relevant.has(1)).toBe(true);
+  });
 });
 
 describe('getPatchLineRange', () => {

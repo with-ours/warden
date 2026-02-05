@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { UsageStats } from '../types/index.js';
 
 /**
  * Context passed to tool execution.
@@ -46,10 +47,11 @@ export interface CouncilMember<TInput, TVerdict> {
 
 /**
  * Result of convening a council member.
+ * Includes usage stats aggregated across all API calls (including tool iterations).
  */
 export type Verdict<T> =
-  | { success: true; verdict: T }
-  | { success: false; error: string };
+  | { success: true; verdict: T; usage: UsageStats }
+  | { success: false; error: string; usage?: UsageStats };
 
 /**
  * Options for convening the council.

@@ -4,6 +4,7 @@ import { evaluateFixAttempts } from './orchestrator.js';
 import type { ExistingComment } from '../dedup.js';
 import { generateContentHash } from '../dedup.js';
 import type { Finding } from '../../types/index.js';
+import type { FixEvaluationResult } from './llm-evaluator.js';
 
 // Mock the LLM evaluator to avoid actual API calls
 vi.mock('./llm-evaluator.js', () => ({
@@ -23,6 +24,18 @@ import { fetchFollowUpPatches, fetchFileContent } from './github-actions.js';
 const mockedEvaluateFix = vi.mocked(evaluateFix);
 const mockedFetchFollowUpPatches = vi.mocked(fetchFollowUpPatches);
 const mockedFetchFileContent = vi.mocked(fetchFileContent);
+
+/** Helper to create mock evaluation result */
+function mockEvalResult(
+  status: 'not_attempted' | 'attempted_failed' | 'resolved',
+  reasoning: string
+): FixEvaluationResult {
+  return {
+    verdict: { status, reasoning },
+    usage: { inputTokens: 100, outputTokens: 50, costUSD: 0.0003 },
+    usedFallback: false,
+  };
+}
 
 // Mock Octokit - we won't use it directly since we mock fetchFollowUpPatches
 const mockOctokit = {} as Octokit;
@@ -113,12 +126,12 @@ describe('evaluateFixAttempts', () => {
     expect(result.evaluated).toBe(0);
   });
 
-  it('skips comments not touched by patches', async () => {
+  it('evaluates comments even when in different file than patches', async () => {
     const comments: ExistingComment[] = [
       {
         id: 1,
-        path: 'src/db.ts',
-        line: 200, // Far from patch
+        path: 'src/other.ts', // Different file than the patch
+        line: 42,
         title: 'Issue',
         description: 'Desc',
         contentHash: 'abc',
@@ -128,12 +141,14 @@ describe('evaluateFixAttempts', () => {
     ];
 
     mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
+    mockedFetchFileContent.mockResolvedValue('line 42');
+    mockedEvaluateFix.mockResolvedValue(mockEvalResult('not_attempted', 'Changes in different file'));
 
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
 
-    expect(result.skipped).toBe(1);
-    expect(result.evaluated).toBe(0);
-    expect(mockedEvaluateFix).not.toHaveBeenCalled();
+    // We evaluate all unresolved comments, judge decides relevance
+    expect(result.evaluated).toBe(1);
+    expect(mockedEvaluateFix).toHaveBeenCalled();
   });
 
   it('skips when judge says not attempted', async () => {
@@ -152,10 +167,7 @@ describe('evaluateFixAttempts', () => {
 
     mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
     mockedFetchFileContent.mockResolvedValue('line 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42: vulnerable code\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52');
-    mockedEvaluateFix.mockResolvedValue({
-      status: 'not_attempted',
-      reasoning: 'Unrelated change',
-    });
+    mockedEvaluateFix.mockResolvedValue(mockEvalResult('not_attempted', 'Unrelated change'));
 
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
 
@@ -180,10 +192,7 @@ describe('evaluateFixAttempts', () => {
 
     mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
     mockedFetchFileContent.mockResolvedValue('line 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42: fixed code\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52');
-    mockedEvaluateFix.mockResolvedValue({
-      status: 'resolved',
-      reasoning: 'Properly sanitized with parameterized query',
-    });
+    mockedEvaluateFix.mockResolvedValue(mockEvalResult('resolved', 'Properly sanitized with parameterized query'));
 
     // No re-detection (empty findings)
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
@@ -215,10 +224,7 @@ describe('evaluateFixAttempts', () => {
 
     mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
     mockedFetchFileContent.mockResolvedValue('line 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42: still vulnerable\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52');
-    mockedEvaluateFix.mockResolvedValue({
-      status: 'resolved', // Judge thinks it's fixed
-      reasoning: 'Tried to fix',
-    });
+    mockedEvaluateFix.mockResolvedValue(mockEvalResult('resolved', 'Tried to fix'));
 
     const result = await evaluateFixAttempts(
       mockOctokit,
@@ -250,10 +256,7 @@ describe('evaluateFixAttempts', () => {
 
     mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', '@@ -40,5 +40,7 @@\n+code']]));
     mockedFetchFileContent.mockResolvedValue('line 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40\nline 41\nline 42: partially fixed\nline 43\nline 44\nline 45\nline 46\nline 47\nline 48\nline 49\nline 50\nline 51\nline 52');
-    mockedEvaluateFix.mockResolvedValue({
-      status: 'attempted_failed',
-      reasoning: 'Edge case not handled',
-    });
+    mockedEvaluateFix.mockResolvedValue(mockEvalResult('attempted_failed', 'Edge case not handled'));
 
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
 
@@ -327,8 +330,8 @@ describe('evaluateFixAttempts', () => {
 
     // First comment: resolved, second: failed
     mockedEvaluateFix
-      .mockResolvedValueOnce({ status: 'resolved', reasoning: 'Good fix' })
-      .mockResolvedValueOnce({ status: 'attempted_failed', reasoning: 'Bad fix' });
+      .mockResolvedValueOnce(mockEvalResult('resolved', 'Good fix'))
+      .mockResolvedValueOnce(mockEvalResult('attempted_failed', 'Bad fix'));
 
     const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
 
@@ -336,5 +339,81 @@ describe('evaluateFixAttempts', () => {
     expect(result.toResolve[0]!.id).toBe(1);
     expect(result.toReply).toHaveLength(1);
     expect(result.toReply[0]!.comment.id).toBe(2);
+  });
+
+  it('passes patches to tool context for get_file_diff tool', async () => {
+    const comments: ExistingComment[] = [
+      {
+        id: 1,
+        path: 'src/db.ts',
+        line: 42,
+        title: 'Issue',
+        description: 'Desc',
+        contentHash: 'abc',
+        threadId: 'thread-1',
+        isWarden: true,
+      },
+    ];
+
+    const patchContent = '@@ -40,5 +40,7 @@\n+fixed code';
+    mockedFetchFollowUpPatches.mockResolvedValue(new Map([['src/db.ts', patchContent]]));
+    mockedFetchFileContent.mockResolvedValue('line 42');
+    mockedEvaluateFix.mockResolvedValue(mockEvalResult('resolved', 'Fixed'));
+
+    await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
+
+    // Verify patches are passed in toolContext
+    expect(mockedEvaluateFix).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comment: expect.any(Object),
+        changedFiles: ['src/db.ts'],
+        codeBeforeFix: expect.any(String),
+      }),
+      expect.objectContaining({
+        toolContext: expect.objectContaining({
+          patches: expect.any(Map),
+        }),
+      })
+    );
+
+    // Verify the actual patches map content
+    const callArgs = mockedEvaluateFix.mock.calls[0];
+    const toolContext = callArgs?.[1]?.toolContext;
+    expect(toolContext?.patches?.get('src/db.ts')).toBe(patchContent);
+  });
+
+  it('passes all changed files to evaluator', async () => {
+    const comments: ExistingComment[] = [
+      {
+        id: 1,
+        path: 'src/db.ts',
+        line: 42,
+        title: 'Issue',
+        description: 'Desc',
+        contentHash: 'abc',
+        threadId: 'thread-1',
+        isWarden: true,
+      },
+    ];
+
+    // Multiple files changed
+    mockedFetchFollowUpPatches.mockResolvedValue(
+      new Map([
+        ['src/db.ts', '@@ -40,5 +40,7 @@\n+code'],
+        ['src/utils.ts', '@@ -10,3 +10,5 @@\n+helper'],
+      ])
+    );
+    mockedFetchFileContent.mockResolvedValue('line 42');
+    mockedEvaluateFix.mockResolvedValue(mockEvalResult('resolved', 'Fixed'));
+
+    await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
+
+    // Verify changedFiles includes all changed files (not just the comment's file)
+    expect(mockedEvaluateFix).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changedFiles: expect.arrayContaining(['src/db.ts', 'src/utils.ts']),
+      }),
+      expect.any(Object)
+    );
   });
 });

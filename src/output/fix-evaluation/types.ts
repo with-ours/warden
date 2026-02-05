@@ -1,7 +1,9 @@
 import type { ExistingComment } from '../dedup.js';
+import type { UsageStats } from '../../types/index.js';
 
 /**
  * Aggregated result of evaluating fix attempts across all comments.
+ * Includes accumulated usage stats from all council evaluations.
  */
 export interface FixEvaluationResult {
   /** Comments where fix was successful and should be resolved */
@@ -12,10 +14,12 @@ export interface FixEvaluationResult {
     replyBody: string;
     commitSha: string;
   }[];
-  /** Comments not touched by patches (no fix attempted) */
+  /** Comments not evaluated (no patches, or over limit) */
   skipped: number;
   /** Comments sent to LLM for evaluation */
   evaluated: number;
+  /** Accumulated usage stats from all fix evaluations */
+  usage: UsageStats;
 }
 
 /**

@@ -17,13 +17,15 @@ A judge might recommend an action as part of its verdict (e.g., "this is vulnera
 
 ### Single-Turn, Focused Judgments
 
-Council members make one judgment per call. They don't:
+Council members make one judgment per call. Most members don't:
 - Explore codebases
 - Make multi-step decisions
 - Read files or call APIs
 - Take actions with side effects
 
-If a task requires exploration, tool use, or multi-step reasoning, it belongs in a skill agent (SDK), not a council member.
+**Exception**: Some judgments require bounded exploration. The `fixJudge` has tools to examine diffs and file content because determining "did this fix the issue?" may require looking at changes in multiple locations. See [Fix Evaluation](fix-evaluation.md) for details.
+
+If a task requires unbounded exploration or multi-step reasoning, it belongs in a skill agent (SDK), not a council member.
 
 ## When to Use What
 
@@ -47,16 +49,23 @@ Is this a single, focused judgment?
 
 ### `fixJudge`
 
-Evaluates whether a code patch addressed a reported issue.
+Evaluates whether code changes addressed a reported issue.
 
-**Input**: A comment (finding) and a patch (diff)
+**Input**:
+- A comment (the original finding with title, description, location)
+- List of changed files
+- Code at the issue location before the commit
+
+**Tools** (bounded exploration):
+- `get_file_diff(path)` - See what changed in a file
+- `get_file_at_commit(path, before|after)` - See file content
 
 **Verdict**:
-- `not_attempted` - The patch doesn't try to address this issue
-- `attempted_failed` - The patch tries but doesn't succeed
-- `resolved` - The patch correctly fixes the issue
+- `not_attempted` - Changes unrelated to this issue
+- `attempted_failed` - Fix attempted but incorrect/incomplete
+- `resolved` - The issue is fixed
 
-**Used by**: Follow-up commit evaluation. When a developer pushes after Warden posts comments, this judge determines if they tried to fix Warden's findings.
+**Used by**: Follow-up commit evaluation. When a developer pushes after Warden posts comments, this judge explores the changes to determine if each issue was addressed. See [Fix Evaluation](fix-evaluation.md) for the full flow.
 
 ### `duplicateJudge`
 
@@ -92,6 +101,28 @@ conveneWithFallback(judge, input, options, fallbackVerdict)
 
 The fallback verdict is returned on any error, ensuring the system degrades gracefully.
 
+### Usage Tracking
+
+Every council call tracks token usage and cost. Usage is accumulated across all API calls, including tool iterations:
+
+```typescript
+interface UsageStats {
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+}
+```
+
+Usage is always returned, even on failure (may be partial if the call failed mid-way). Callers should aggregate usage when making multiple council calls:
+
+```typescript
+const result1 = await convene(judge1, input1, options);
+const result2 = await convene(judge2, input2, options);
+const totalUsage = addUsage(result1.usage, result2.usage);
+```
+
+This enables global tracking of LLM costs across a Warden session.
+
 ## Future Members
 
 Potential council members that fit the pattern:
@@ -108,16 +139,26 @@ Each answers a single, focused question with a structured verdict.
 
 | Anti-Pattern | Why | Better Approach |
 |--------------|-----|-----------------|
-| Multi-file analysis | Requires exploration | SDK agent |
+| Unbounded exploration | No clear scope | SDK agent |
 | Code generation | Action, not judgment | Skill or dedicated tool |
 | Complex reasoning chains | Multiple judgments needed | SDK agent or orchestrator |
 | Parsing/extraction | Data transformation, not judgment | Utility function |
 
+### When Tools Are Appropriate
+
+Council members can have tools when:
+- The judgment requires examining specific, bounded context
+- The tool calls are exploratory (reading), not actions (writing)
+- There's a clear limit on iterations (e.g., max 5 tool calls)
+- The question is still focused: "did X happen?" not "find all X"
+
+Example: `fixJudge` has tools because "did this commit fix the issue?" may require looking at diffs in multiple files, but the scope is bounded (one commit, one issue).
+
 ### Signs You Need an Agent Instead
 
-- "First check X, then based on that, check Y"
-- "Find all instances of this pattern"
-- "Generate code that fixes this"
-- "Read these files and decide..."
+- "Find all instances of this pattern" (unbounded search)
+- "Generate code that fixes this" (action, not judgment)
+- "Analyze the entire codebase for..." (unbounded scope)
+- "Keep trying until it works" (iterative refinement)
 
-These require tool access, state, or multi-step reasoning - use an SDK agent.
+These require unbounded exploration or actions - use an SDK agent.
