@@ -374,7 +374,11 @@ export async function runPRWorkflow(
         const resolvedCount = await resolveStaleComments(octokit, staleComments);
         if (resolvedCount > 0) {
           console.log(`Resolved ${resolvedCount} stale Warden comments`);
-          // Track resolved comments for dismiss check
+        }
+        // Only track resolved comments if ALL were resolved successfully
+        // Otherwise we don't know which ones failed, and incorrectly dismissing
+        // a review could leave unresolved issues unmarked
+        if (resolvedCount === staleComments.length) {
           staleComments.forEach((c) => staleCommentsResolved.add(c.id));
         }
       }
