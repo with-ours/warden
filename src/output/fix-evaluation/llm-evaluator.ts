@@ -31,6 +31,8 @@ export interface FixEvaluationInput {
   comment: ExistingComment;
   changedFiles: string[];
   codeBeforeFix: string;
+  /** Code at the issue location after the fix (optional, reduces tool calls when provided) */
+  codeAfterFix?: string;
 }
 
 /**

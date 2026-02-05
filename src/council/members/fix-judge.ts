@@ -9,6 +9,8 @@ export interface FixJudgeInput {
   comment: ExistingComment;
   changedFiles: string[];
   codeBeforeFix: string;
+  /** Code at the issue location after the fix attempt (optional, reduces tool calls) */
+  codeAfterFix?: string;
 }
 
 /**
@@ -117,47 +119,85 @@ export const fixJudge = defineCouncilMember<FixJudgeInput, FixJudgeVerdict>({
   name: 'fix-judge',
   description: 'Judges whether a code change addressed a reported issue and if the fix succeeded',
 
-  buildPrompt: ({ comment, changedFiles, codeBeforeFix }) => `You are judging whether a code change resolved a reported issue.
+  buildPrompt: ({ comment, changedFiles, codeBeforeFix, codeAfterFix }) => {
+    const afterCodeSection = codeAfterFix
+      ? `
+
+## Code at Issue Location (AFTER this commit)
+\`\`\`
+${codeAfterFix}
+\`\`\``
+      : '';
+
+    const investigationStrategy = codeAfterFix
+      ? `## Investigation Strategy
+
+Compare the BEFORE and AFTER code above to determine if the issue was fixed.
+Use tools only if you need additional context:
+
+- \`get_file_diff(path)\` - See unified diff of changes to a file
+- \`get_file_at_commit(path, "before"|"after", startLine?, endLine?)\` - Read more file content if needed`
+      : `## Investigation Strategy
+
+Use tools to determine if the issue was fixed:
+
+1. **Start with get_file_diff** on the issue's file (if changed) to see what was modified
+2. **Use get_file_at_commit with "after"** to see the current state at the issue location
+3. **Check related files** if the fix might involve changes elsewhere (imports, shared utilities, etc.)
+
+Tools:
+- \`get_file_diff(path)\` - See unified diff of changes to a file
+- \`get_file_at_commit(path, "before"|"after", startLine?, endLine?)\` - Read file content at either commit`;
+
+    return `# Task: Judge whether a code change fixed a reported issue
+
+**Key Question: Does the reported issue still exist in the code after this commit?**
+
+## Verdict Definitions
+
+Choose ONE verdict based on these criteria:
+
+**resolved** - The issue NO LONGER EXISTS. Evidence:
+- The problematic code was corrected (directly or via equivalent fix)
+- The code was refactored in a way that eliminates the issue by design
+- The problematic code was intentionally removed (file deleted, function removed, dead code cleaned up)
+
+**attempted_failed** - A fix was ATTEMPTED but the issue PERSISTS. Evidence:
+- Changes touch the reported location or related code, suggesting intent to fix
+- BUT the core issue remains (wrong fix, incomplete fix, edge cases missed)
+- Use this when someone clearly tried to address the issue but didn't succeed
+
+**not_attempted** - The issue was NOT ADDRESSED. Evidence:
+- No changes to the problematic code or its logic
+- Changes are unrelated (different feature, different bug, unrelated refactor)
+- The reported code is identical or functionally unchanged
 
 ## The Reported Issue
+
 **Title:** ${comment.title}
-**Location:** ${comment.path} near line ${comment.line}
+**File:** ${comment.path}
+**Line:** ${comment.line}
 
 **Description:**
 ${comment.description}
 
-## Code at Issue Location (before this commit)
+## Code at Issue Location (BEFORE this commit)
 \`\`\`
 ${codeBeforeFix}
 \`\`\`
+${afterCodeSection}
 
-## Files Changed
-${changedFiles.join('\n')}
+## Changed Files in This Commit
+${changedFiles.map((f) => `- ${f}`).join('\n')}
 
-## Evaluation
+${investigationStrategy}
 
-Use tools to investigate the changes:
-- get_file_diff(path): See what changed in a file
-- get_file_at_commit(path, "before"|"after", startLine?, endLine?): Read file content
+## Response Format
 
-**Key question: Does the reported issue still exist in the code?**
+IMPORTANT: Your response must be ONLY a JSON object with no other text. Do not explain your reasoning in prose - put your one-sentence explanation in the "reasoning" field.
 
-An issue can be resolved by:
-- Applying the suggested fix or an equivalent correction
-- Refactoring that eliminates the bug by design
-- Removing the problematic code entirely (valid for deprecated, dead, or intentionally deleted code)
-
-Check the issue location and related files. The fix may be in a different location than originally reported.
-
-## Verdicts
-
-**resolved** - The issue no longer exists. The code was fixed, refactored, or the problematic code was removed.
-
-**attempted_failed** - Changes were made that appear to target this issue, but the fix is incorrect, incomplete, or the issue still exists.
-
-**not_attempted** - The changes are unrelated to this issue. The problematic code is unchanged or untouched.
-
-Return ONLY: {"status": "resolved|attempted_failed|not_attempted", "reasoning": "one sentence"}`,
+{"status": "resolved|attempted_failed|not_attempted", "reasoning": "One sentence explaining your verdict"}`;
+  },
 
   tools: [getFileDiff, getFileAtCommit],
   maxToolIterations: 5,

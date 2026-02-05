@@ -37,6 +37,15 @@ function mockEvalResult(
   };
 }
 
+/** Helper to create a fallback (failed) evaluation result */
+function mockFallbackResult(): FixEvaluationResult {
+  return {
+    verdict: { status: 'not_attempted', reasoning: 'Evaluation failed' },
+    usage: { inputTokens: 50, outputTokens: 10, costUSD: 0.0001 },
+    usedFallback: true,
+  };
+}
+
 // Mock Octokit - we won't use it directly since we mock fetchFollowUpPatches
 const mockOctokit = {} as Octokit;
 
@@ -59,6 +68,7 @@ describe('evaluateFixAttempts', () => {
     expect(result.toReply).toHaveLength(0);
     expect(result.skipped).toBe(0);
     expect(result.evaluated).toBe(0);
+    expect(result.failedEvaluations).toBe(0);
   });
 
   it('skips non-Warden comments', async () => {
@@ -263,6 +273,53 @@ describe('evaluateFixAttempts', () => {
     expect(result.toResolve).toHaveLength(0);
     expect(result.toReply).toHaveLength(1);
     expect(result.toReply[0]!.replyBody).toContain('Edge case not handled');
+  });
+
+  it('tracks failed evaluations when fallback is used', async () => {
+    const comments: ExistingComment[] = [
+      {
+        id: 1,
+        path: 'src/db.ts',
+        line: 42,
+        title: 'Issue 1',
+        description: 'Desc 1',
+        contentHash: 'abc',
+        threadId: 'thread-1',
+        isWarden: true,
+      },
+      {
+        id: 2,
+        path: 'src/api.ts',
+        line: 10,
+        title: 'Issue 2',
+        description: 'Desc 2',
+        contentHash: 'def',
+        threadId: 'thread-2',
+        isWarden: true,
+      },
+    ];
+
+    mockedFetchFollowUpPatches.mockResolvedValue(
+      new Map([
+        ['src/db.ts', '@@ -40,5 +40,7 @@\n+code'],
+        ['src/api.ts', '@@ -8,5 +8,7 @@\n+code'],
+      ])
+    );
+    mockedFetchFileContent.mockResolvedValue('line 42');
+
+    // First comment: evaluation failed (fallback), second: resolved
+    mockedEvaluateFix
+      .mockResolvedValueOnce(mockFallbackResult())
+      .mockResolvedValueOnce(mockEvalResult('resolved', 'Good fix'));
+
+    const result = await evaluateFixAttempts(mockOctokit, comments, context, [], 'api-key');
+
+    expect(result.evaluated).toBe(2);
+    expect(result.failedEvaluations).toBe(1);
+    expect(result.toResolve).toHaveLength(1);
+    expect(result.toReply).toHaveLength(0);
+    // Usage should still be accumulated even for failed evaluations
+    expect(result.usage.inputTokens).toBeGreaterThan(100);
   });
 
   it('returns all skipped when no patches fetched', async () => {

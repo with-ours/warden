@@ -47,6 +47,7 @@ vi.mock('../../output/fix-evaluation/index.js', () => ({
       toReply: [],
       skipped: 0,
       evaluated: 0,
+      failedEvaluations: 0,
       usage: { inputTokens: 0, outputTokens: 0, costUSD: 0 },
     })
   ),
@@ -544,6 +545,7 @@ describe('runPRWorkflow', () => {
         ],
         skipped: 0,
         evaluated: 1,
+        failedEvaluations: 0,
         usage: { inputTokens: 100, outputTokens: 50, costUSD: 0.0003 },
       });
 

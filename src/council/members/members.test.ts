@@ -9,33 +9,6 @@ describe('council members', () => {
       expect(fixJudge.description).toContain('addressed');
     });
 
-    it('builds prompt with comment, changed files, and code before fix', () => {
-      const comment = {
-        id: 1,
-        path: 'src/db.ts',
-        line: 42,
-        title: 'SQL Injection',
-        description: 'User input passed to query',
-        contentHash: 'abc',
-      };
-      const changedFiles = ['src/db.ts', 'src/utils.ts'];
-      const codeBeforeFix = '42: const query = `SELECT * FROM users WHERE id = ${id}`;';
-
-      const prompt = fixJudge.buildPrompt({ comment, changedFiles, codeBeforeFix });
-
-      expect(prompt).toContain('SQL Injection');
-      expect(prompt).toContain('src/db.ts');
-      expect(prompt).toContain('near line 42');
-      expect(prompt).toContain(codeBeforeFix);
-      expect(prompt).toContain('src/utils.ts');
-      expect(prompt).toContain('Files Changed');
-      expect(prompt).toContain('not_attempted');
-      expect(prompt).toContain('attempted_failed');
-      expect(prompt).toContain('resolved');
-      expect(prompt).toContain('get_file_diff');
-      expect(prompt).toContain('get_file_at_commit');
-    });
-
     it('has both tools defined', () => {
       expect(fixJudge.tools).toBeDefined();
       expect(fixJudge.tools).toHaveLength(2);

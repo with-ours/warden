@@ -43,6 +43,8 @@ export interface CouncilMember<TInput, TVerdict> {
   tools?: CouncilTool<TInput>[];
   /** Max tool iterations before giving up (default: 3) */
   maxToolIterations?: number;
+  /** Optional prefill to force output format (e.g., "{" to force JSON) */
+  prefill?: string;
 }
 
 /**
@@ -50,8 +52,8 @@ export interface CouncilMember<TInput, TVerdict> {
  * Includes usage stats aggregated across all API calls (including tool iterations).
  */
 export type Verdict<T> =
-  | { success: true; verdict: T; usage: UsageStats }
-  | { success: false; error: string; usage?: UsageStats };
+  | { success: true; verdict: T; usage: UsageStats; debug?: ConveneDebugMetadata }
+  | { success: false; error: string; usage?: UsageStats; debug?: ConveneDebugMetadata };
 
 /**
  * Options for convening the council.
@@ -63,4 +65,31 @@ export interface ConveneOptions {
   model?: string;
   /** Context passed to tool execution */
   toolContext?: ToolContext;
+  /** Enable debug logging for tool calls and iterations */
+  debug?: boolean;
+}
+
+/**
+ * Metadata about tool calls made during deliberation.
+ * Useful for debugging and understanding judge behavior.
+ */
+export interface ToolCallMetadata {
+  /** Tool name that was called */
+  name: string;
+  /** Input passed to the tool */
+  input: unknown;
+  /** Result returned by the tool */
+  result: string;
+  /** Whether the tool call resulted in an error */
+  isError: boolean;
+}
+
+/**
+ * Debug metadata returned with verdicts when debug mode is enabled.
+ */
+export interface ConveneDebugMetadata {
+  /** Number of tool iterations used */
+  toolIterations: number;
+  /** Details of each tool call made */
+  toolCalls: ToolCallMetadata[];
 }

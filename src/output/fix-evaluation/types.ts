@@ -18,6 +18,8 @@ export interface FixEvaluationResult {
   skipped: number;
   /** Comments sent to LLM for evaluation */
   evaluated: number;
+  /** Evaluations that failed and used fallback (API errors, invalid responses) */
+  failedEvaluations: number;
   /** Accumulated usage stats from all fix evaluations */
   usage: UsageStats;
 }

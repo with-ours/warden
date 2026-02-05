@@ -20,6 +20,9 @@ const { convene, conveneWithFallback } = await import('./convene.js');
 /** Mock usage to include in responses */
 const mockUsage = { input_tokens: 100, output_tokens: 50 };
 
+// Note: convene auto-prefills based on schema type ('{' for objects, '[' for arrays).
+// Mock responses should NOT include the leading character since prefill provides it.
+
 const testMember = defineCouncilMember({
   name: 'test-member',
   description: 'A test council member',
@@ -37,7 +40,7 @@ describe('convene', () => {
 
   it('returns successful verdict when LLM returns valid JSON', async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: '{"result": true, "reason": "looks good"}' }],
+      content: [{ type: 'text', text: '"result": true, "reason": "looks good"}' }],
       stop_reason: 'end_turn',
       usage: mockUsage,
     });
@@ -51,9 +54,11 @@ describe('convene', () => {
     }
   });
 
-  it('extracts JSON from surrounding text', async () => {
+  it('handles trailing text after JSON', async () => {
+    // With prefill, model continues from '{' so there's no leading text,
+    // but there may be trailing content after the closing brace
     mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Here is my analysis:\n{"result": false, "reason": "issue found"}\nHope this helps!' }],
+      content: [{ type: 'text', text: '"result": false, "reason": "issue found"}\nHope this helps!' }],
       stop_reason: 'end_turn',
       usage: mockUsage,
     });
@@ -83,7 +88,7 @@ describe('convene', () => {
 
   it('returns error when JSON does not match schema', async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: '{"wrong": "shape"}' }],
+      content: [{ type: 'text', text: '"wrong": "shape"}' }],
       stop_reason: 'end_turn',
       usage: mockUsage,
     });
@@ -160,9 +165,9 @@ describe('convene with tools', () => {
         stop_reason: 'tool_use',
         usage: mockUsage,
       })
-      // Second call: model returns verdict after seeing tool result
+      // Second call: model returns verdict after seeing tool result (no leading { due to prefill)
       .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '{"result": true, "reason": "Data confirmed it"}' }],
+        content: [{ type: 'text', text: '"result": true, "reason": "Data confirmed it"}' }],
         stop_reason: 'end_turn',
         usage: mockUsage,
       });
@@ -181,10 +186,11 @@ describe('convene with tools', () => {
     expect(secondCall).toBeDefined();
     if (secondCall) {
       const secondCallMessages = secondCall[0].messages;
-      expect(secondCallMessages).toHaveLength(3); // initial prompt, assistant with tool use, user with tool result
-      expect(secondCallMessages[2].role).toBe('user');
-      expect(secondCallMessages[2].content[0].type).toBe('tool_result');
-      expect(secondCallMessages[2].content[0].content).toBe('Data for test');
+      // Messages: user prompt, assistant prefill, assistant with tool use, user with tool result
+      expect(secondCallMessages).toHaveLength(4);
+      expect(secondCallMessages[3].role).toBe('user');
+      expect(secondCallMessages[3].content[0].type).toBe('tool_result');
+      expect(secondCallMessages[3].content[0].content).toBe('Data for test');
     }
   });
 
@@ -231,7 +237,7 @@ describe('convene with tools', () => {
         usage: mockUsage,
       })
       .mockResolvedValueOnce({
-        content: [{ type: 'text', text: '{"result": "got it"}' }],
+        content: [{ type: 'text', text: '"result": "got it"}' }],
         stop_reason: 'end_turn',
         usage: mockUsage,
       });
@@ -247,9 +253,51 @@ describe('convene with tools', () => {
     expect(secondCall).toBeDefined();
     if (secondCall) {
       const secondCallMessages = secondCall[0].messages;
-      const toolResult = secondCallMessages[2].content[0];
+      // Messages: user prompt, assistant prefill, assistant with tool use, user with tool result
+      const toolResult = secondCallMessages[3].content[0];
       expect(toolResult.content).toBe('Secret: mysecret');
     }
+  });
+
+  it('returns debug metadata when debug option is enabled', async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        content: [
+          { type: 'text', text: 'Let me check' },
+          { type: 'tool_use', id: 'tool-1', name: 'get_data', input: { key: 'test' } },
+        ],
+        stop_reason: 'tool_use',
+        usage: mockUsage,
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: '"result": true, "reason": "done"}' }],
+        stop_reason: 'end_turn',
+        usage: mockUsage,
+      });
+
+    const result = await convene(toolMember, { value: 'test' }, { apiKey: 'test-key', debug: true });
+
+    expect(result.success).toBe(true);
+    expect(result.debug).toBeDefined();
+    expect(result.debug?.toolIterations).toBe(1);
+    expect(result.debug?.toolCalls).toHaveLength(1);
+    expect(result.debug?.toolCalls[0]?.name).toBe('get_data');
+    expect(result.debug?.toolCalls[0]?.input).toEqual({ key: 'test' });
+    expect(result.debug?.toolCalls[0]?.result).toBe('Data for test');
+    expect(result.debug?.toolCalls[0]?.isError).toBe(false);
+  });
+
+  it('does not include debug metadata when debug option is false', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '"result": true, "reason": "done"}' }],
+      stop_reason: 'end_turn',
+      usage: mockUsage,
+    });
+
+    const result = await convene(toolMember, { value: 'test' }, { apiKey: 'test-key', debug: false });
+
+    expect(result.success).toBe(true);
+    expect(result.debug).toBeUndefined();
   });
 });
 
@@ -260,7 +308,7 @@ describe('conveneWithFallback', () => {
 
   it('returns verdict on success', async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: '{"result": true, "reason": "success"}' }],
+      content: [{ type: 'text', text: '"result": true, "reason": "success"}' }],
       stop_reason: 'end_turn',
       usage: mockUsage,
     });

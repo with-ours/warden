@@ -10,7 +10,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
 }));
 
 // Import after mocking
-const { buildFixPrompt, evaluateFix } = await import('./llm-evaluator.js');
+const { evaluateFix } = await import('./llm-evaluator.js');
 
 const mockComment: ExistingComment = {
   id: 1,
@@ -30,34 +30,8 @@ const mockCodeBeforeFix = `40: function getUser(id: string) {
 43:   return db.query(query);
 44: }`;
 
-describe('buildFixPrompt', () => {
-  it('includes comment details', () => {
-    const prompt = buildFixPrompt(mockComment, mockChangedFiles, mockCodeBeforeFix);
-
-    expect(prompt).toContain('SQL Injection Vulnerability');
-    expect(prompt).toContain('User input is passed directly');
-    expect(prompt).toContain('src/db.ts');
-    expect(prompt).toContain('near line 42');
-  });
-
-  it('includes code before fix and changed files', () => {
-    const prompt = buildFixPrompt(mockComment, mockChangedFiles, mockCodeBeforeFix);
-
-    expect(prompt).toContain('Code at Issue Location');
-    expect(prompt).toContain(mockCodeBeforeFix);
-    expect(prompt).toContain('Files Changed');
-    expect(prompt).toContain('src/db.ts');
-    expect(prompt).toContain('src/utils.ts');
-  });
-
-  it('describes all three status options', () => {
-    const prompt = buildFixPrompt(mockComment, mockChangedFiles, mockCodeBeforeFix);
-
-    expect(prompt).toContain('not_attempted');
-    expect(prompt).toContain('attempted_failed');
-    expect(prompt).toContain('resolved');
-  });
-});
+// Note: Prompt structure tests are in fix-judge.integration.test.ts
+// These tests focus on the evaluateFix function's behavior with mocked API responses
 
 describe('evaluateFix', () => {
   beforeEach(() => {
@@ -73,9 +47,12 @@ describe('evaluateFix', () => {
     codeBeforeFix: mockCodeBeforeFix,
   };
 
+  // Note: fix-judge uses prefill: '{' which convene.ts prepends to response text.
+  // Mock responses should NOT include the leading '{' since prefill provides it.
+
   it('returns resolved status when fix succeeds', async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: '{"status": "resolved", "reasoning": "Fix correctly addresses the issue"}' }],
+      content: [{ type: 'text', text: '"status": "resolved", "reasoning": "Fix correctly addresses the issue"}' }],
       stop_reason: 'end_turn',
       usage: mockUsage,
     });
@@ -89,7 +66,7 @@ describe('evaluateFix', () => {
 
   it('returns attempted_failed when fix is incorrect', async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: '{"status": "attempted_failed", "reasoning": "Edge case not handled"}' }],
+      content: [{ type: 'text', text: '"status": "attempted_failed", "reasoning": "Edge case not handled"}' }],
       stop_reason: 'end_turn',
       usage: mockUsage,
     });
@@ -102,7 +79,7 @@ describe('evaluateFix', () => {
 
   it('returns not_attempted when code is unchanged', async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: '{"status": "not_attempted", "reasoning": "Changes unrelated to the issue"}' }],
+      content: [{ type: 'text', text: '"status": "not_attempted", "reasoning": "Changes unrelated to the issue"}' }],
       stop_reason: 'end_turn',
       usage: mockUsage,
     });

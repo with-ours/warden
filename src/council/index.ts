@@ -1,4 +1,12 @@
-export type { CouncilMember, Verdict, ConveneOptions, CouncilTool, ToolContext } from './types.js';
+export type {
+  CouncilMember,
+  Verdict,
+  ConveneOptions,
+  CouncilTool,
+  ToolContext,
+  ToolCallMetadata,
+  ConveneDebugMetadata,
+} from './types.js';
 export { defineCouncilMember } from './member.js';
 export { convene, conveneWithFallback } from './convene.js';
 export type { ConveneWithFallbackResult } from './convene.js';

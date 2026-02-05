@@ -1,14 +1,24 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
-import type { CouncilMember, ConveneOptions, Verdict } from './types.js';
+import { z } from 'zod';
+import type { CouncilMember, ConveneOptions, Verdict, ToolCallMetadata, ConveneDebugMetadata } from './types.js';
 import type { UsageStats } from '../types/index.js';
 import { extractJson } from './json.js';
 import { convertToolsToApiFormat, executeTools, extractToolUseBlocks } from './tools.js';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5';
-const DEFAULT_MAX_TOKENS = 512;
+const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_TIMEOUT = 30000;
 const DEFAULT_MAX_TOOL_ITERATIONS = 3;
+
+/**
+ * Infer prefill character from schema type to force JSON output format.
+ */
+function inferPrefill(schema: z.ZodSchema): string | undefined {
+  if (schema instanceof z.ZodObject) return '{';
+  if (schema instanceof z.ZodArray) return '[';
+  return undefined;
+}
 
 /** Cost per million tokens for Claude Haiku 4.5 (as of 2024) */
 const HAIKU_COST_PER_M_INPUT = 0.80;
@@ -70,6 +80,7 @@ export async function convene<TInput, TVerdict>(
   const maxTokens = member.maxTokens ?? DEFAULT_MAX_TOKENS;
   const timeout = member.timeout ?? DEFAULT_TIMEOUT;
   const maxToolIterations = member.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS;
+  const debug = options.debug ?? false;
 
   const client = new Anthropic({ apiKey: options.apiKey, timeout });
 
@@ -78,13 +89,29 @@ export async function convene<TInput, TVerdict>(
 
   const messages: MessageParam[] = [{ role: 'user', content: prompt }];
 
+  // Auto-prefill based on schema type to force JSON output
+  const prefill = member.prefill ?? inferPrefill(member.schema);
+  if (prefill) {
+    messages.push({ role: 'assistant', content: prefill });
+  }
+
   // Track usage across all iterations
   let totalUsage = emptyUsage();
 
-  try {
-    let iterations = 0;
+  // Track tool calls for debug metadata
+  const allToolCalls: ToolCallMetadata[] = [];
+  let toolIterations = 0;
 
-    while (iterations < maxToolIterations) {
+  /**
+   * Build debug metadata for return values.
+   */
+  const buildDebugMetadata = (): ConveneDebugMetadata | undefined => {
+    if (!debug) return undefined;
+    return { toolIterations, toolCalls: allToolCalls };
+  };
+
+  try {
+    while (toolIterations < maxToolIterations) {
       const response = await client.messages.create({
         model,
         max_tokens: maxTokens,
@@ -99,22 +126,31 @@ export async function convene<TInput, TVerdict>(
       if (response.stop_reason === 'end_turn' || response.stop_reason === 'max_tokens') {
         const content = response.content[0];
         if (!content || content.type !== 'text') {
-          return { success: false, error: 'Empty response from model', usage: totalUsage };
+          return { success: false, error: 'Empty response from model', usage: totalUsage, debug: buildDebugMetadata() };
         }
 
-        const jsonText = extractJson(content.text);
+        // Prepend prefill to response text if it was used
+        const fullText = prefill ? prefill + content.text : content.text;
+        const jsonText = extractJson(fullText);
         if (!jsonText) {
-          return { success: false, error: 'No JSON found in response', usage: totalUsage };
+          if (debug) {
+            console.error(`[council:${member.name}] No JSON found in response. Raw text:`, fullText.slice(0, 500));
+          }
+          return { success: false, error: 'No JSON found in response', usage: totalUsage, debug: buildDebugMetadata() };
         }
 
         const parsed = JSON.parse(jsonText);
         const validated = member.schema.safeParse(parsed);
 
         if (!validated.success) {
-          return { success: false, error: `Invalid verdict: ${validated.error.message}`, usage: totalUsage };
+          return { success: false, error: `Invalid verdict: ${validated.error.message}`, usage: totalUsage, debug: buildDebugMetadata() };
         }
 
-        return { success: true, verdict: validated.data, usage: totalUsage };
+        if (debug && toolIterations > 0) {
+          console.log(`[council:${member.name}] Completed with ${toolIterations} tool iteration(s), ${allToolCalls.length} tool call(s)`);
+        }
+
+        return { success: true, verdict: validated.data, usage: totalUsage, debug: buildDebugMetadata() };
       }
 
       // Handle tool use
@@ -122,7 +158,7 @@ export async function convene<TInput, TVerdict>(
         const toolCalls = extractToolUseBlocks(response.content);
 
         if (toolCalls.length === 0) {
-          return { success: false, error: 'Tool use indicated but no tool calls found', usage: totalUsage };
+          return { success: false, error: 'Tool use indicated but no tool calls found', usage: totalUsage, debug: buildDebugMetadata() };
         }
 
         const toolResults = await executeTools(
@@ -132,23 +168,47 @@ export async function convene<TInput, TVerdict>(
           options.toolContext ?? {}
         );
 
+        // Track tool calls for debug metadata
+        for (let i = 0; i < toolCalls.length; i++) {
+          const call = toolCalls[i];
+          const result = toolResults[i];
+          if (call && result) {
+            const metadata: ToolCallMetadata = {
+              name: call.name,
+              input: call.input,
+              result: typeof result.content === 'string' ? result.content : JSON.stringify(result.content),
+              isError: result.is_error ?? false,
+            };
+            allToolCalls.push(metadata);
+
+            if (debug) {
+              const inputStr = JSON.stringify(call.input);
+              const resultPreview = metadata.result.slice(0, 100) + (metadata.result.length > 100 ? '...' : '');
+              console.log(`[council:${member.name}] Tool call: ${call.name}(${inputStr}) -> ${metadata.isError ? 'ERROR: ' : ''}${resultPreview}`);
+            }
+          }
+        }
+
         // Add assistant response and tool results to messages
         messages.push({ role: 'assistant', content: response.content });
         messages.push({ role: 'user', content: toolResults });
 
-        iterations++;
+        toolIterations++;
         continue;
       }
 
       // Unexpected stop reason
-      return { success: false, error: `Unexpected stop reason: ${response.stop_reason}`, usage: totalUsage };
+      return { success: false, error: `Unexpected stop reason: ${response.stop_reason}`, usage: totalUsage, debug: buildDebugMetadata() };
     }
 
-    return { success: false, error: 'Max tool iterations exceeded', usage: totalUsage };
+    if (debug) {
+      console.warn(`[council:${member.name}] Max tool iterations (${maxToolIterations}) exceeded`);
+    }
+    return { success: false, error: 'Max tool iterations exceeded', usage: totalUsage, debug: buildDebugMetadata() };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`Council member '${member.name}' failed: ${message}`);
-    return { success: false, error: message, usage: totalUsage };
+    return { success: false, error: message, usage: totalUsage, debug: buildDebugMetadata() };
   }
 }
 

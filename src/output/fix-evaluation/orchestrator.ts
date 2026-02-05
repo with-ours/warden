@@ -37,20 +37,31 @@ function addUsage(a: UsageStats, b: UsageStats): UsageStats {
 const MAX_EVALUATIONS = 20;
 
 /** Number of lines of context around the finding location */
-const CONTEXT_LINES = 10;
+const CONTEXT_LINES = 20;
 
 /**
- * Fetch code snippet at a finding location from before the fix.
+ * Extract numbered lines from content.
+ */
+function extractLines(content: string, start: number, end: number): string {
+  const lines = content.split('\n');
+  return lines
+    .slice(start - 1, end)
+    .map((line, i) => `${start + i}: ${line}`)
+    .join('\n');
+}
+
+/**
+ * Fetch code snippet at a finding location at a specific commit.
  * Returns code with line numbers.
  *
  * Uses `currentLine` (GitHub's tracked position) when available to handle line drift.
  */
-async function fetchCodeBeforeFix(
+async function fetchCodeAtLocation(
   octokit: Octokit,
   owner: string,
   repo: string,
   comment: ExistingComment,
-  previousSha: string,
+  sha: string,
   contextLines = CONTEXT_LINES
 ): Promise<string> {
   // Prefer currentLine (GitHub's tracked position) over line (original marker)
@@ -58,21 +69,13 @@ async function fetchCodeBeforeFix(
   const startLine = Math.max(1, targetLine - contextLines);
   const endLine = targetLine + contextLines;
 
-  const extractLines = (content: string, start: number, end: number): string => {
-    const lines = content.split('\n');
-    return lines
-      .slice(start - 1, end)
-      .map((line, i) => `${start + i}: ${line}`)
-      .join('\n');
-  };
-
   try {
-    const content = await fetchFileContent(octokit, owner, repo, comment.path, previousSha);
+    const content = await fetchFileContent(octokit, owner, repo, comment.path, sha);
     return extractLines(content, startLine, endLine);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     if (errorMessage.includes('Not Found')) {
-      return '(file did not exist before this commit)';
+      return '(file does not exist at this commit)';
     }
     throw error;
   }
@@ -136,6 +139,7 @@ export async function evaluateFixAttempts(
     toReply: [],
     skipped: 0,
     evaluated: 0,
+    failedEvaluations: 0,
     usage: emptyUsage(),
   };
 
@@ -189,7 +193,7 @@ export async function evaluateFixAttempts(
     // Fetch code at the issue location before this commit
     let codeBeforeFix: string;
     try {
-      codeBeforeFix = await fetchCodeBeforeFix(
+      codeBeforeFix = await fetchCodeAtLocation(
         octokit,
         context.owner,
         context.repo,
@@ -201,14 +205,37 @@ export async function evaluateFixAttempts(
       continue;
     }
 
+    // Fetch code after fix (optional, helps reduce tool calls)
+    let codeAfterFix: string | undefined;
+    try {
+      codeAfterFix = await fetchCodeAtLocation(
+        octokit,
+        context.owner,
+        context.repo,
+        comment,
+        context.currentSha
+      );
+    } catch {
+      // Non-fatal: judge can still use tools to investigate
+    }
+
     // Judge fix status - let it explore with tools
     const evalResult = await evaluateFix(
-      { comment, changedFiles, codeBeforeFix },
+      { comment, changedFiles, codeBeforeFix, codeAfterFix },
       { apiKey, toolContext }
     );
 
     // Accumulate usage from this evaluation
     result.usage = addUsage(result.usage, evalResult.usage);
+
+    // Track evaluation failures (API errors, invalid responses, etc.)
+    if (evalResult.usedFallback) {
+      result.failedEvaluations++;
+      console.warn(
+        `Fix evaluation failed for ${comment.path}:${comment.line} (${comment.title}), using fallback`
+      );
+      continue;
+    }
 
     if (evalResult.verdict.status === 'not_attempted') {
       // Changes weren't related to this issue
