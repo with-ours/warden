@@ -3,7 +3,7 @@ import type { Octokit } from '@octokit/rest';
 import { defineCouncilMember } from '../member.js';
 import type { ExistingComment } from '../../output/dedup.js';
 import type { CouncilTool, ToolContext } from '../types.js';
-import { fetchFileLines } from '../../output/fix-evaluation/github-actions.js';
+import { fetchFileLines, fetchFileContent } from '../../output/fix-evaluation/github-actions.js';
 
 export interface FixJudgeInput {
   comment: ExistingComment;
@@ -61,7 +61,6 @@ const getFileAtCommit: CouncilTool<FixJudgeInput> = {
       }
 
       // Fetch full file but limit output
-      const { fetchFileContent } = await import('../../output/fix-evaluation/github-actions.js');
       const content = await fetchFileContent(ctx.octokit, ctx.owner, ctx.repo, path, sha);
       const lines = content.split('\n');
 
@@ -118,13 +117,13 @@ export const fixJudge = defineCouncilMember<FixJudgeInput, FixJudgeVerdict>({
   name: 'fix-judge',
   description: 'Judges whether a code change addressed a reported issue and if the fix succeeded',
 
-  buildPrompt: ({ comment, changedFiles, codeBeforeFix }) => `You are judging whether a code change fixed a specific issue that was reported in code review.
+  buildPrompt: ({ comment, changedFiles, codeBeforeFix }) => `You are judging whether a code change resolved a reported issue.
 
-## The Original Report
+## The Reported Issue
 **Title:** ${comment.title}
 **Location:** ${comment.path} near line ${comment.line}
 
-**Full comment (includes suggested fix if provided):**
+**Description:**
 ${comment.description}
 
 ## Code at Issue Location (before this commit)
@@ -132,23 +131,33 @@ ${comment.description}
 ${codeBeforeFix}
 \`\`\`
 
-## Files Changed in This Commit
+## Files Changed
 ${changedFiles.join('\n')}
 
-## Your Task
-Determine if these changes addressed the issue. Use tools to explore:
+## Evaluation
+
+Use tools to investigate the changes:
 - get_file_diff(path): See what changed in a file
-- get_file_at_commit(path, "before"|"after", startLine?, endLine?): See additional context
+- get_file_at_commit(path, "before"|"after", startLine?, endLine?): Read file content
 
-The fix may be at the original location, elsewhere in the file, or in a related file.
-If a suggested fix was provided, check if it was applied (or an equivalent fix).
+**Key question: Does the reported issue still exist in the code?**
 
-Return ONLY a JSON object: {"status": "not_attempted|attempted_failed|resolved", "reasoning": "brief explanation"}
+An issue can be resolved by:
+- Applying the suggested fix or an equivalent correction
+- Refactoring that eliminates the bug by design
+- Removing the problematic code entirely (valid for deprecated, dead, or intentionally deleted code)
 
-Verdict meanings:
-1. **not_attempted** - No changes related to this issue were made.
-2. **attempted_failed** - Changes were made to address this issue but the fix is incorrect or incomplete.
-3. **resolved** - The issue described is fixed.`,
+Check the issue location and related files. The fix may be in a different location than originally reported.
+
+## Verdicts
+
+**resolved** - The issue no longer exists. The code was fixed, refactored, or the problematic code was removed.
+
+**attempted_failed** - Changes were made that appear to target this issue, but the fix is incorrect, incomplete, or the issue still exists.
+
+**not_attempted** - The changes are unrelated to this issue. The problematic code is unchanged or untouched.
+
+Return ONLY: {"status": "resolved|attempted_failed|not_attempted", "reasoning": "one sentence"}`,
 
   tools: [getFileDiff, getFileAtCommit],
   maxToolIterations: 5,
