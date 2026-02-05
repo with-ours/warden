@@ -158,9 +158,10 @@ function renderSuggestion(diff: string, description: string): string {
     .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
     .map((line) => line.slice(1));
 
-  // For deletion-only diffs, show the description since we can't render a suggestion
+  // For deletion-only diffs, show the description since we can't render a suggestion.
+  // Must escape HTML since description is LLM-generated and may contain <, >, & characters.
   if (addedLines.length === 0) {
-    return description ? `**Suggested fix:** ${description}` : '';
+    return description ? `**Suggested fix:** ${escapeHtml(description)}` : '';
   }
 
   return `\`\`\`suggestion\n${addedLines.join('\n')}\n\`\`\``;
