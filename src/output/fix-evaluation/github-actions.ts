@@ -1,6 +1,56 @@
 import type { Octokit } from '@octokit/rest';
 
 /**
+ * Fetch file content at a specific commit SHA.
+ * Returns the decoded file content as a string.
+ */
+export async function fetchFileContent(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path: string,
+  sha: string
+): Promise<string> {
+  const { data } = await octokit.repos.getContent({
+    owner,
+    repo,
+    path,
+    ref: sha,
+  });
+
+  // getContent returns array for directories, single object for files
+  if (Array.isArray(data)) {
+    throw new Error(`Path "${path}" is a directory, not a file`);
+  }
+
+  if (data.type !== 'file' || !('content' in data)) {
+    throw new Error(`Path "${path}" is not a file`);
+  }
+
+  // Content is base64 encoded
+  return Buffer.from(data.content, 'base64').toString('utf-8');
+}
+
+/**
+ * Fetch file content at a specific commit, returning lines in a range.
+ * startLine and endLine are 1-indexed and inclusive.
+ */
+export async function fetchFileLines(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path: string,
+  sha: string,
+  startLine: number,
+  endLine: number
+): Promise<string> {
+  const content = await fetchFileContent(octokit, owner, repo, path, sha);
+  const lines = content.split('\n');
+  const selectedLines = lines.slice(startLine - 1, endLine);
+  return selectedLines.map((line, i) => `${startLine + i}: ${line}`).join('\n');
+}
+
+/**
  * Fetch the patches between two commits (for follow-up commit analysis).
  * Returns a map of file path to patch content.
  */

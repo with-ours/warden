@@ -8,7 +8,7 @@ describe('council members', () => {
       expect(fixJudge.description).toContain('addressed');
     });
 
-    it('builds prompt with comment and patch', () => {
+    it('builds prompt with comment and before/after code', () => {
       const comment = {
         id: 1,
         path: 'src/db.ts',
@@ -17,16 +17,29 @@ describe('council members', () => {
         description: 'User input passed to query',
         contentHash: 'abc',
       };
-      const patch = '@@ -40,5 +40,7 @@\n+sanitized';
+      const beforeCode = '42: const query = `SELECT * FROM users WHERE id = ${id}`;';
+      const afterCode = '42: const query = db.prepare("SELECT * FROM users WHERE id = ?").bind(id);';
 
-      const prompt = fixJudge.buildPrompt({ comment, patch });
+      const prompt = fixJudge.buildPrompt({ comment, beforeCode, afterCode });
 
       expect(prompt).toContain('SQL Injection');
       expect(prompt).toContain('src/db.ts:42');
-      expect(prompt).toContain(patch);
+      expect(prompt).toContain(beforeCode);
+      expect(prompt).toContain(afterCode);
+      expect(prompt).toContain('Code BEFORE');
+      expect(prompt).toContain('Code AFTER');
       expect(prompt).toContain('not_attempted');
       expect(prompt).toContain('attempted_failed');
       expect(prompt).toContain('resolved');
+    });
+
+    it('has tools defined', () => {
+      expect(fixJudge.tools).toBeDefined();
+      expect(fixJudge.tools).toHaveLength(1);
+      const tools = fixJudge.tools;
+      if (tools && tools[0]) {
+        expect(tools[0].name).toBe('get_file_at_commit');
+      }
     });
   });
 

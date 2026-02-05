@@ -23,31 +23,39 @@ const mockComment: ExistingComment = {
   threadId: 'thread-1',
 };
 
-const mockPatch = `@@ -40,5 +40,7 @@ function getUser(id: string) {
--  const query = \`SELECT * FROM users WHERE id = '\${id}'\`;
-+  const query = 'SELECT * FROM users WHERE id = ?';
-+  const params = [id];
-   return db.query(query);
- }`;
+const mockBeforeCode = `40: function getUser(id: string) {
+41:   // Get user by ID
+42:   const query = \`SELECT * FROM users WHERE id = '\${id}'\`;
+43:   return db.query(query);
+44: }`;
+
+const mockAfterCode = `40: function getUser(id: string) {
+41:   // Get user by ID
+42:   const query = 'SELECT * FROM users WHERE id = ?';
+43:   const params = [id];
+44:   return db.query(query, params);
+45: }`;
 
 describe('buildFixPrompt', () => {
   it('includes comment details', () => {
-    const prompt = buildFixPrompt(mockComment, mockPatch);
+    const prompt = buildFixPrompt(mockComment, mockBeforeCode, mockAfterCode);
 
     expect(prompt).toContain('SQL Injection Vulnerability');
     expect(prompt).toContain('User input is passed directly');
     expect(prompt).toContain('src/db.ts:42');
   });
 
-  it('includes patch content', () => {
-    const prompt = buildFixPrompt(mockComment, mockPatch);
+  it('includes before and after code', () => {
+    const prompt = buildFixPrompt(mockComment, mockBeforeCode, mockAfterCode);
 
-    expect(prompt).toContain(mockPatch);
-    expect(prompt).toContain('```diff');
+    expect(prompt).toContain('Code BEFORE');
+    expect(prompt).toContain('Code AFTER');
+    expect(prompt).toContain(mockBeforeCode);
+    expect(prompt).toContain(mockAfterCode);
   });
 
   it('describes all three status options', () => {
-    const prompt = buildFixPrompt(mockComment, mockPatch);
+    const prompt = buildFixPrompt(mockComment, mockBeforeCode, mockAfterCode);
 
     expect(prompt).toContain('not_attempted');
     expect(prompt).toContain('attempted_failed');
@@ -137,9 +145,12 @@ describe('evaluateFix', () => {
   it('returns resolved status when fix succeeds', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"status": "resolved", "reasoning": "Fix correctly addresses the issue"}' }],
+      stop_reason: 'end_turn',
     });
 
-    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
+      apiKey: 'test-api-key',
+    });
 
     expect(result.status).toBe('resolved');
     expect(result.reasoning).toBe('Fix correctly addresses the issue');
@@ -148,20 +159,26 @@ describe('evaluateFix', () => {
   it('returns attempted_failed when fix is incorrect', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"status": "attempted_failed", "reasoning": "Edge case not handled"}' }],
+      stop_reason: 'end_turn',
     });
 
-    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
+      apiKey: 'test-api-key',
+    });
 
     expect(result.status).toBe('attempted_failed');
     expect(result.reasoning).toContain('Edge case');
   });
 
-  it('returns not_attempted when patch is unrelated', async () => {
+  it('returns not_attempted when code is unchanged', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"status": "not_attempted", "reasoning": "Changes unrelated to the issue"}' }],
+      stop_reason: 'end_turn',
     });
 
-    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
+      apiKey: 'test-api-key',
+    });
 
     expect(result.status).toBe('not_attempted');
   });
@@ -169,7 +186,9 @@ describe('evaluateFix', () => {
   it('returns fallback on API error', async () => {
     mockCreate.mockRejectedValue(new Error('API rate limit'));
 
-    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
+      apiKey: 'test-api-key',
+    });
 
     expect(result.status).toBe('not_attempted');
     expect(result.reasoning).toBe('Evaluation failed');
@@ -178,9 +197,12 @@ describe('evaluateFix', () => {
   it('returns fallback on invalid response', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: 'No JSON here!' }],
+      stop_reason: 'end_turn',
     });
 
-    const result = await evaluateFix(mockComment, mockPatch, 'test-api-key');
+    const result = await evaluateFix(mockComment, mockBeforeCode, mockAfterCode, {
+      apiKey: 'test-api-key',
+    });
 
     expect(result.status).toBe('not_attempted');
     expect(result.reasoning).toBe('Evaluation failed');

@@ -1,6 +1,6 @@
 import { conveneWithFallback, fixJudge, extractAndParseJson } from '../../council/index.js';
 import type { ExistingComment } from '../dedup.js';
-import type { FixJudgeVerdict } from '../../council/index.js';
+import type { FixJudgeVerdict, FixJudgeContext, ConveneOptions } from '../../council/index.js';
 
 export type { FixJudgeVerdict, FixStatus } from '../../council/index.js';
 export { fixJudge };
@@ -8,8 +8,12 @@ export { fixJudge };
 /**
  * Build a fix evaluation prompt for testing purposes.
  */
-export function buildFixPrompt(comment: ExistingComment, patch: string): string {
-  return fixJudge.buildPrompt({ comment, patch });
+export function buildFixPrompt(
+  comment: ExistingComment,
+  beforeCode: string,
+  afterCode: string
+): string {
+  return fixJudge.buildPrompt({ comment, beforeCode, afterCode });
 }
 
 /**
@@ -33,18 +37,32 @@ export function parseEvaluationResponse<T>(
 }
 
 /**
- * Evaluate the fix status of a patch against a comment.
+ * Options for evaluating a fix.
+ */
+export interface EvaluateFixOptions {
+  apiKey: string;
+  toolContext?: FixJudgeContext;
+}
+
+/**
+ * Evaluate the fix status by comparing before/after code against a comment.
  * Returns the status: not_attempted, attempted_failed, or resolved.
  */
 export function evaluateFix(
   comment: ExistingComment,
-  patch: string,
-  apiKey: string
+  beforeCode: string,
+  afterCode: string,
+  options: EvaluateFixOptions
 ): Promise<FixJudgeVerdict> {
+  const conveneOptions: ConveneOptions = {
+    apiKey: options.apiKey,
+    toolContext: options.toolContext,
+  };
+
   return conveneWithFallback(
     fixJudge,
-    { comment, patch },
-    { apiKey },
+    { comment, beforeCode, afterCode },
+    conveneOptions,
     { status: 'not_attempted', reasoning: 'Evaluation failed' }
   );
 }

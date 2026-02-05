@@ -1,4 +1,4 @@
-export type { CouncilMember, Verdict, ConveneOptions } from './types.js';
+export type { CouncilMember, Verdict, ConveneOptions, CouncilTool, ToolContext } from './types.js';
 export { defineCouncilMember } from './member.js';
 export { convene, conveneWithFallback } from './convene.js';
 export {
@@ -7,6 +7,7 @@ export {
   extractBalancedJson,
   stripCodeFences,
 } from './json.js';
+export { convertToolSchema, convertToolsToApiFormat, executeTools } from './tools.js';
 
 export {
   fixJudge,
@@ -19,6 +20,7 @@ export type {
   FixJudgeInput,
   FixJudgeVerdict,
   FixStatus,
+  FixJudgeContext,
   DuplicateJudgeInput,
   DuplicateJudgeVerdict,
 } from './members/index.js';

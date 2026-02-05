@@ -5,10 +5,93 @@ import type { Finding } from '../../types/index.js';
 import type { FixEvaluationContext, FixEvaluationResult } from './types.js';
 import { findRelevantPatches } from './patch-analysis.js';
 import { evaluateFix } from './llm-evaluator.js';
-import { fetchFollowUpPatches, formatFailedFixReply } from './github-actions.js';
+import {
+  fetchFollowUpPatches,
+  fetchFileContent,
+  formatFailedFixReply,
+} from './github-actions.js';
+import type { FixJudgeContext } from '../../council/index.js';
 
 /** Maximum comments to evaluate per run */
 const MAX_EVALUATIONS = 20;
+
+/** Number of lines of context around the finding location */
+const CONTEXT_LINES = 10;
+
+/**
+ * Fetch code snippets at a finding location from both commits.
+ * Returns before/after code with line numbers.
+ */
+async function fetchCodeSnippets(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  comment: ExistingComment,
+  previousSha: string,
+  currentSha: string,
+  contextLines = CONTEXT_LINES
+): Promise<{ beforeCode: string; afterCode: string }> {
+  const startLine = Math.max(1, comment.line - contextLines);
+  const endLine = comment.line + contextLines;
+
+  const extractLines = (content: string, start: number, end: number): string => {
+    const lines = content.split('\n');
+    return lines
+      .slice(start - 1, end)
+      .map((line, i) => `${start + i}: ${line}`)
+      .join('\n');
+  };
+
+  try {
+    const [beforeContent, afterContent] = await Promise.all([
+      fetchFileContent(octokit, owner, repo, comment.path, previousSha),
+      fetchFileContent(octokit, owner, repo, comment.path, currentSha),
+    ]);
+
+    return {
+      beforeCode: extractLines(beforeContent, startLine, endLine),
+      afterCode: extractLines(afterContent, startLine, endLine),
+    };
+  } catch (error) {
+    // If file doesn't exist at one commit (new/deleted file), handle gracefully
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    if (errorMessage.includes('Not Found')) {
+      // Try to fetch whichever commit has the file
+      try {
+        const afterContent = await fetchFileContent(
+          octokit,
+          owner,
+          repo,
+          comment.path,
+          currentSha
+        );
+        return {
+          beforeCode: '(file did not exist)',
+          afterCode: extractLines(afterContent, startLine, endLine),
+        };
+      } catch {
+        try {
+          const beforeContent = await fetchFileContent(
+            octokit,
+            owner,
+            repo,
+            comment.path,
+            previousSha
+          );
+          return {
+            beforeCode: extractLines(beforeContent, startLine, endLine),
+            afterCode: '(file was deleted)',
+          };
+        } catch {
+          throw new Error(`File "${comment.path}" not found at either commit`);
+        }
+      }
+    }
+
+    throw error;
+  }
+}
 
 /**
  * Check if a finding matches a comment (same location and similar content).
@@ -110,20 +193,50 @@ export async function evaluateFixAttempts(
     );
   }
 
+  // Build tool context for fix-judge
+  const toolContext: FixJudgeContext = {
+    octokit,
+    owner: context.owner,
+    repo: context.repo,
+    previousSha: context.previousSha,
+    currentSha: context.currentSha,
+  };
+
   // Evaluate each comment
   for (const comment of commentsToEvaluate) {
-    const patch = relevantPatches.get(comment.id);
-    if (!patch) {
+    if (!relevantPatches.has(comment.id)) {
       continue;
     }
 
     result.evaluated++;
 
-    // Judge fix status in a single call
-    const verdict = await evaluateFix(comment, patch, apiKey);
+    // Fetch code snippets at the finding location
+    let beforeCode: string;
+    let afterCode: string;
+    try {
+      const snippets = await fetchCodeSnippets(
+        octokit,
+        context.owner,
+        context.repo,
+        comment,
+        context.previousSha,
+        context.currentSha
+      );
+      beforeCode = snippets.beforeCode;
+      afterCode = snippets.afterCode;
+    } catch (error) {
+      console.warn(`Failed to fetch code snippets for ${comment.path}:${comment.line}: ${error}`);
+      continue;
+    }
+
+    // Judge fix status
+    const verdict = await evaluateFix(comment, beforeCode, afterCode, {
+      apiKey,
+      toolContext,
+    });
 
     if (verdict.status === 'not_attempted') {
-      // Patch touched the area but wasn't attempting to fix this issue
+      // Code touched the area but wasn't attempting to fix this issue
       continue;
     }
 

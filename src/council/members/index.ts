@@ -2,7 +2,7 @@ import { fixJudge } from './fix-judge.js';
 import { duplicateJudge } from './duplicate-judge.js';
 
 export { fixJudge, duplicateJudge };
-export type { FixJudgeInput, FixJudgeVerdict, FixStatus } from './fix-judge.js';
+export type { FixJudgeInput, FixJudgeVerdict, FixStatus, FixJudgeContext } from './fix-judge.js';
 export type { DuplicateJudgeInput, DuplicateJudgeVerdict } from './duplicate-judge.js';
 
 /**
