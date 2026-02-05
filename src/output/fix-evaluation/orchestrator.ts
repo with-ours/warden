@@ -2,7 +2,7 @@ import type { Octokit } from '@octokit/rest';
 import type { ExistingComment } from '../dedup.js';
 import { generateContentHash } from '../dedup.js';
 import type { Finding, UsageStats } from '../../types/index.js';
-import type { FixEvaluationContext, FixEvaluationResult } from './types.js';
+import type { EvaluateFixAttemptsContext, EvaluateFixAttemptsResult } from './types.js';
 import { evaluateFix } from './llm-evaluator.js';
 import { fetchFollowUpPatches, fetchFileContent, formatFailedFixReply } from './github-actions.js';
 import type { FixJudgeContext } from '../../council/index.js';
@@ -130,11 +130,11 @@ function wasReDetected(comment: ExistingComment, currentFindings: Finding[]): bo
 export async function evaluateFixAttempts(
   octokit: Octokit,
   comments: ExistingComment[],
-  context: FixEvaluationContext,
+  context: EvaluateFixAttemptsContext,
   currentFindings: Finding[],
   apiKey: string
-): Promise<FixEvaluationResult> {
-  const result: FixEvaluationResult = {
+): Promise<EvaluateFixAttemptsResult> {
+  const result: EvaluateFixAttemptsResult = {
     toResolve: [],
     toReply: [],
     skipped: 0,

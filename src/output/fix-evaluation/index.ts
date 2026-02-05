@@ -1,5 +1,3 @@
-export type { FixEvaluationResult, FixEvaluationContext } from './types.js';
-
 export {
   parsePatchHunks,
   didPatchTouchArea,

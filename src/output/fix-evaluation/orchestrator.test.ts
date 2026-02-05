@@ -4,7 +4,7 @@ import { evaluateFixAttempts } from './orchestrator.js';
 import type { ExistingComment } from '../dedup.js';
 import { generateContentHash } from '../dedup.js';
 import type { Finding } from '../../types/index.js';
-import type { FixEvaluationResult } from './llm-evaluator.js';
+import type { EvaluateFixResult } from './llm-evaluator.js';
 
 // Mock the LLM evaluator to avoid actual API calls
 vi.mock('./llm-evaluator.js', () => ({
@@ -29,7 +29,7 @@ const mockedFetchFileContent = vi.mocked(fetchFileContent);
 function mockEvalResult(
   status: 'not_attempted' | 'attempted_failed' | 'resolved',
   reasoning: string
-): FixEvaluationResult {
+): EvaluateFixResult {
   return {
     verdict: { status, reasoning },
     usage: { inputTokens: 100, outputTokens: 50, costUSD: 0.0003 },
@@ -38,7 +38,7 @@ function mockEvalResult(
 }
 
 /** Helper to create a fallback (failed) evaluation result */
-function mockFallbackResult(): FixEvaluationResult {
+function mockFallbackResult(): EvaluateFixResult {
   return {
     verdict: { status: 'not_attempted', reasoning: 'Evaluation failed' },
     usage: { inputTokens: 50, outputTokens: 10, costUSD: 0.0001 },

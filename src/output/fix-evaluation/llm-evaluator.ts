@@ -36,9 +36,9 @@ export interface FixEvaluationInput {
 }
 
 /**
- * Result of evaluating a fix, including the verdict and usage stats.
+ * Result of a single fix evaluation, including the verdict and usage stats.
  */
-export type FixEvaluationResult = ConveneWithFallbackResult<FixJudgeVerdict>;
+export type EvaluateFixResult = ConveneWithFallbackResult<FixJudgeVerdict>;
 
 /**
  * Evaluate the fix status by letting the judge explore the changes.
@@ -48,7 +48,7 @@ export type FixEvaluationResult = ConveneWithFallbackResult<FixJudgeVerdict>;
 export function evaluateFix(
   input: FixEvaluationInput,
   options: EvaluateFixOptions
-): Promise<FixEvaluationResult> {
+): Promise<EvaluateFixResult> {
   const conveneOptions: ConveneOptions = {
     apiKey: options.apiKey,
     toolContext: options.toolContext,
