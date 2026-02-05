@@ -80,7 +80,7 @@ function renderReview(
     let body = `**${SEVERITY_EMOJI[finding.severity]} ${escapeHtml(finding.title)}**${confidenceNote}\n\n${escapeHtml(finding.description)}`;
 
     if (includeSuggestions && finding.suggestedFix) {
-      body += `\n\n${renderSuggestion(finding.suggestedFix.diff)}`;
+      body += `\n\n${renderSuggestion(finding.suggestedFix.diff, finding.suggestedFix.description)}`;
     }
 
     // Add attribution footnote with skill name, severity, and confidence
@@ -146,10 +146,11 @@ function determineReviewEvent(
 
 /**
  * Render a suggested fix as a GitHub suggestion block.
+ * Falls back to showing the description for deletion-only diffs.
  *
  * @see https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/commenting-on-a-pull-request#adding-line-comments-to-a-pull-request
  */
-function renderSuggestion(diff: string): string {
+function renderSuggestion(diff: string, description: string): string {
   const lines = diff.split('\n');
 
   // Extract added lines (the replacement content) - skip diff header lines
@@ -157,8 +158,9 @@ function renderSuggestion(diff: string): string {
     .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
     .map((line) => line.slice(1));
 
+  // For deletion-only diffs, show the description since we can't render a suggestion
   if (addedLines.length === 0) {
-    return '';
+    return description ? `**Suggested fix:** ${description}` : '';
   }
 
   return `\`\`\`suggestion\n${addedLines.join('\n')}\n\`\`\``;
