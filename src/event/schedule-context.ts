@@ -67,6 +67,7 @@ export async function buildScheduleEventContext(
       body: null,
       author: 'warden',
       baseBranch: defaultBranch,
+      baseSha: headSha, // For scheduled runs, base is same as head
       headBranch: defaultBranch,
       headSha,
       files: fileChanges,

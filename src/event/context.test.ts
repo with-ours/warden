@@ -33,6 +33,7 @@ describe('buildEventContext', () => {
       },
       base: {
         ref: 'main',
+        sha: 'base789xyz',
       },
       head: {
         ref: 'feature-branch',
@@ -77,6 +78,7 @@ describe('buildEventContext', () => {
     expect(context.pullRequest?.body).toBe('Test description');
     expect(context.pullRequest?.author).toBe('test-user');
     expect(context.pullRequest?.baseBranch).toBe('main');
+    expect(context.pullRequest?.baseSha).toBe('base789xyz');
     expect(context.pullRequest?.headBranch).toBe('feature-branch');
     expect(context.pullRequest?.headSha).toBe('abc123def456');
     expect(context.pullRequest?.files).toHaveLength(2);

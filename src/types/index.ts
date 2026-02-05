@@ -157,6 +157,8 @@ export const PullRequestContextSchema = z.object({
   body: z.string().nullable(),
   author: z.string(),
   baseBranch: z.string(),
+  /** SHA of the base branch (e.g., main) that the PR is targeting */
+  baseSha: z.string(),
   headBranch: z.string(),
   headSha: z.string(),
   /** Previous HEAD SHA (only present on synchronize events) */

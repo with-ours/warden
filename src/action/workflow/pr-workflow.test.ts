@@ -468,13 +468,15 @@ describe('runPRWorkflow', () => {
         FIXTURES_DIR
       );
 
+      // Fix evaluation uses baseSha (PR base) to see all changes in the PR,
+      // not previousHeadSha (which only shows the latest commit)
       expect(mockEvaluateFixAttempts).toHaveBeenCalledWith(
         mockOctokit,
         [existingWardenComment],
         expect.objectContaining({
           owner: 'test-owner',
           repo: 'test-repo',
-          previousSha: 'previous123sha',
+          previousSha: 'base123456',
           currentSha: 'current456sha',
         }),
         expect.any(Array),

@@ -83,6 +83,7 @@ export function buildLocalEventContext(options: LocalContextOptions = {}): Event
       body,
       author: 'local',
       baseBranch: base,
+      baseSha: 'local', // CLI doesn't have real base SHA
       headBranch: currentBranch,
       headSha,
       files,
@@ -122,6 +123,7 @@ export async function buildFileEventContext(options: FileContextOptions): Promis
       body: `Analyzing ${files.length} ${pluralize(files.length, 'file')}`,
       author: 'local',
       baseBranch: 'main',
+      baseSha: 'local',
       headBranch: 'file-analysis',
       headSha: 'file-analysis',
       files,

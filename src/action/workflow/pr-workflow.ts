@@ -269,6 +269,8 @@ export async function runPRWorkflow(
   const allFindings = reports.flatMap((r) => r.findings);
   const commentsResolvedByFixEval = new Set<number>();
 
+  // Run fix evaluation on follow-up commits using baseSha to see all PR changes
+  // This ensures we can detect fixes made in any commit, not just the latest
   if (
     context.pullRequest?.previousHeadSha &&
     wardenComments.length > 0 &&
@@ -282,7 +284,7 @@ export async function runPRWorkflow(
         {
           owner: context.repository.owner,
           repo: context.repository.name,
-          previousSha: context.pullRequest.previousHeadSha,
+          previousSha: context.pullRequest.baseSha,
           currentSha: context.pullRequest.headSha,
         },
         allFindings,

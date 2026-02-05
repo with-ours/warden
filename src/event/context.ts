@@ -27,6 +27,7 @@ const GitHubPullRequestSchema = z.object({
   user: GitHubUserSchema,
   base: z.object({
     ref: z.string(),
+    sha: z.string(),
   }),
   head: z.object({
     ref: z.string(),
@@ -88,6 +89,7 @@ export async function buildEventContext(
       body: pr.body,
       author: pr.user.login,
       baseBranch: pr.base.ref,
+      baseSha: pr.base.sha,
       headBranch: pr.head.ref,
       headSha: pr.head.sha,
       // Include previous HEAD SHA for synchronize events (follow-up commits)

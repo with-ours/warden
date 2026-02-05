@@ -50,6 +50,7 @@ describe('executeTrigger', () => {
       body: 'Test description',
       author: 'test-user',
       baseBranch: 'main',
+      baseSha: 'base123',
       headBranch: 'feature',
       headSha: 'abc123',
       files: [],
