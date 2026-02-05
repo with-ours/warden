@@ -145,16 +145,30 @@ function determineReviewEvent(
 }
 
 function renderSuggestion(description: string, diff: string): string {
-  const suggestionLines = diff
-    .split('\n')
+  const lines = diff.split('\n');
+
+  const removedLines = lines
+    .filter((line) => line.startsWith('-') && !line.startsWith('---'))
+    .map((line) => line.slice(1));
+
+  const addedLines = lines
     .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
     .map((line) => line.slice(1));
 
-  if (suggestionLines.length === 0) {
+  if (addedLines.length === 0) {
     return `**Suggested fix:** ${escapeHtml(description)}`;
   }
 
-  return `**Suggested fix:** ${escapeHtml(description)}\n\n\`\`\`suggestion\n${suggestionLines.join('\n')}\n\`\`\``;
+  // Show both removed and added lines for context
+  let result = `**Suggested fix:** ${escapeHtml(description)}`;
+
+  if (removedLines.length > 0) {
+    result += `\n\n\`\`\`diff\n${removedLines.map((l) => `-${l}`).join('\n')}\n${addedLines.map((l) => `+${l}`).join('\n')}\n\`\`\``;
+  }
+
+  result += `\n\n\`\`\`suggestion\n${addedLines.join('\n')}\n\`\`\``;
+
+  return result;
 }
 
 function renderHiddenFindingsLink(hiddenCount: number, checkRunUrl: string): string {

@@ -34,7 +34,7 @@ export async function convene<TInput, TVerdict>(
   try {
     let iterations = 0;
 
-    while (iterations <= maxToolIterations) {
+    while (iterations < maxToolIterations) {
       const response = await client.messages.create({
         model,
         max_tokens: maxTokens,
