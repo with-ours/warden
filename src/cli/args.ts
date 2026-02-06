@@ -39,6 +39,8 @@ export const CLIOptionsSchema = z.object({
   remote: z.string().optional(),
   /** Skip network operations - only use cached remote skills */
   offline: z.boolean().default(false),
+  /** Run linter-rule evaluation on fixable findings */
+  suggestLinters: z.boolean().default(false),
 });
 
 export type CLIOptions = z.infer<typeof CLIOptionsSchema>;
@@ -110,6 +112,7 @@ Add Options:
   --force              Bypass skill cache and fetch latest
 
 Run Options:
+  --suggest-linters    Evaluate if linter rules could catch findings
   --offline            Use cached remote skills without network access
 
 Setup-app Options:
@@ -269,6 +272,7 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
       list: { type: 'boolean', short: 'l', default: false },
       remote: { type: 'string' },
       offline: { type: 'boolean', default: false },
+      'suggest-linters': { type: 'boolean', default: false },
       parallel: { type: 'string' },
       git: { type: 'boolean', default: false },
       log: { type: 'boolean', default: false },
@@ -403,6 +407,7 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
     git: values.git,
     log: values.log,
     offline: values.offline,
+    suggestLinters: values['suggest-linters'],
     help: values.help,
     quiet: values.quiet,
     verbose: verboseCount,

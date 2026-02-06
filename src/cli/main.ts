@@ -29,6 +29,7 @@ import {
   runInteractiveFixFlow,
   renderFixSummary,
 } from './fix.js';
+import { runLinterCheck } from './linter-check.js';
 import { runInit } from './commands/init.js';
 import { runAdd } from './commands/add.js';
 import { runSetupApp } from './commands/setup-app.js';
@@ -146,6 +147,17 @@ async function outputResultsAndHandleFixes(
   // Show summary (uses filtered reports for display)
   reporter.blank();
   reporter.renderSummary(filteredReports, totalDuration);
+
+  // Linter evaluation (opt-in via --suggest-linters)
+  if (options.suggestLinters && !options.json) {
+    const apiKey = getAnthropicApiKey();
+    if (apiKey) {
+      const fixableForLinterCheck = collectFixableFindings(filteredReports);
+      await runLinterCheck(fixableForLinterCheck, apiKey, reporter);
+    } else {
+      reporter.warning('--suggest-linters requires ANTHROPIC_API_KEY or WARDEN_ANTHROPIC_API_KEY');
+    }
+  }
 
   // Handle fixes (uses filtered reports - only show fixes for visible findings)
   const fixableFindings = collectFixableFindings(filteredReports);
