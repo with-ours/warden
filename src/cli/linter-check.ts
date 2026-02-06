@@ -32,6 +32,8 @@ export interface RuleProposal {
 /** Full result of the linter evaluation pass. */
 export interface LinterCheckResult {
   findings: Finding[];
+  /** Maps original finding ID -> rule label (e.g. "eslint/no-eval") */
+  preventionMap: Map<string, string>;
   usage: UsageStats;
   durationMs: number;
 }
@@ -122,6 +124,20 @@ If no findings are lintable, return {"rules": []}.`;
 }
 
 /**
+ * Build a map from original finding ID to the rule that would prevent it.
+ */
+export function buildPreventionMap(proposals: RuleProposal[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const p of proposals) {
+    if (!p.rule || p.findingIds.length === 0) continue;
+    for (const id of p.findingIds) {
+      map.set(id, p.rule);
+    }
+  }
+  return map;
+}
+
+/**
  * Convert rule proposals into fixable Finding objects.
  */
 export function proposalsToFindings(
@@ -189,23 +205,25 @@ export async function evaluateLinterRules(
     costUSD: estimateHaikuCost(response.usage),
   };
 
+  const empty: LinterCheckResult = { findings: [], preventionMap: new Map(), usage, durationMs };
+
   // Extract JSON from response (prefill means we prepend the '{')
   const content = response.content[0];
   if (!content || content.type !== 'text') {
-    return { findings: [], usage, durationMs };
+    return empty;
   }
 
   const rawJson = '{' + content.text;
   const jsonStr = extractBalancedJson(rawJson, 0);
   if (!jsonStr) {
-    return { findings: [], usage, durationMs };
+    return empty;
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonStr);
   } catch {
-    return { findings: [], usage, durationMs };
+    return empty;
   }
 
   if (
@@ -214,7 +232,7 @@ export async function evaluateLinterRules(
     !('rules' in parsed) ||
     !Array.isArray((parsed as { rules: unknown }).rules)
   ) {
-    return { findings: [], usage, durationMs };
+    return empty;
   }
 
   const proposals = (parsed as { rules: RuleProposal[] }).rules;
@@ -223,8 +241,9 @@ export async function evaluateLinterRules(
     config.path,
     findings
   );
+  const preventionMap = buildPreventionMap(proposals);
 
-  return { findings: preventionFindings, usage, durationMs };
+  return { findings: preventionFindings, preventionMap, usage, durationMs };
 }
 
 /**
@@ -246,8 +265,16 @@ function estimateHaikuCost(usage: {
   return inputCost + outputCost + cacheReadCost + cacheCreateCost;
 }
 
+/** Output from the linter check pass. */
+export interface LinterCheckOutput {
+  /** Prevention findings (config diffs) for the fix flow */
+  fixes: Finding[];
+  /** Maps original finding ID -> rule label for inline display */
+  preventionMap: Map<string, string>;
+}
+
 /**
- * Top-level orchestrator. Returns prevention findings to merge into the fix flow.
+ * Top-level orchestrator. Returns prevention findings and a map for inline display.
  * Never throws: errors are logged as warnings.
  */
 export async function runLinterCheck(
@@ -255,15 +282,17 @@ export async function runLinterCheck(
   repoPath: string,
   apiKey: string,
   reporter: Reporter
-): Promise<Finding[]> {
+): Promise<LinterCheckOutput> {
+  const empty: LinterCheckOutput = { fixes: [], preventionMap: new Map() };
+
   if (findings.length === 0) {
-    return [];
+    return empty;
   }
 
   const config = detectLinterConfig(repoPath);
   if (!config) {
     reporter.debug('No linter config found, skipping linter evaluation');
-    return [];
+    return empty;
   }
 
   try {
@@ -276,10 +305,10 @@ export async function runLinterCheck(
       );
     }
 
-    return result.findings;
+    return { fixes: result.findings, preventionMap: result.preventionMap };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     reporter.warning(`Linter evaluation failed: ${message}`);
-    return [];
+    return empty;
   }
 }

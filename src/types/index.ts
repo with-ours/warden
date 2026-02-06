@@ -71,6 +71,8 @@ export const FindingSchema = z.object({
   location: LocationSchema.optional(),
   suggestedFix: SuggestedFixSchema.optional(),
   elapsedMs: z.number().nonnegative().optional(),
+  /** Linter rule that could prevent this finding (set by --suggest-linters). */
+  prevention: z.string().optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 

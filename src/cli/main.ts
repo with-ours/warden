@@ -136,6 +136,31 @@ async function outputResultsAndHandleFixes(
   writeJsonlReport(runLogPath, reports, totalDuration);
   reporter.debug(`Run log: ${runLogPath}`);
 
+  // Linter evaluation (opt-in via --suggest-linters, before rendering so hints appear inline)
+  let preventionFixes: Finding[] = [];
+  if (options.suggestLinters && !options.json) {
+    const apiKey = getAnthropicApiKey();
+    if (apiKey) {
+      const fixableForLinterCheck = collectFixableFindings(filteredReports);
+      const linterOutput = await runLinterCheck(fixableForLinterCheck, repoPath, apiKey, reporter);
+      preventionFixes = linterOutput.fixes;
+
+      // Annotate findings with prevention hints for inline display
+      if (linterOutput.preventionMap.size > 0) {
+        for (const report of filteredReports) {
+          for (const finding of report.findings) {
+            const rule = linterOutput.preventionMap.get(finding.id);
+            if (rule) {
+              finding.prevention = rule;
+            }
+          }
+        }
+      }
+    } else {
+      reporter.warning('--suggest-linters requires ANTHROPIC_API_KEY or WARDEN_ANTHROPIC_API_KEY');
+    }
+  }
+
   // Output results
   reporter.blank();
   if (options.json) {
@@ -148,20 +173,8 @@ async function outputResultsAndHandleFixes(
   reporter.blank();
   reporter.renderSummary(filteredReports, totalDuration);
 
-  // Linter evaluation (opt-in via --suggest-linters)
-  let preventionFindings: Finding[] = [];
-  if (options.suggestLinters && !options.json) {
-    const apiKey = getAnthropicApiKey();
-    if (apiKey) {
-      const fixableForLinterCheck = collectFixableFindings(filteredReports);
-      preventionFindings = await runLinterCheck(fixableForLinterCheck, repoPath, apiKey, reporter);
-    } else {
-      reporter.warning('--suggest-linters requires ANTHROPIC_API_KEY or WARDEN_ANTHROPIC_API_KEY');
-    }
-  }
-
   // Handle fixes (uses filtered reports - only show fixes for visible findings)
-  const fixableFindings = [...collectFixableFindings(filteredReports), ...preventionFindings];
+  const fixableFindings = [...collectFixableFindings(filteredReports), ...preventionFixes];
   if (fixableFindings.length > 0) {
     if (options.fix) {
       const fixSummary = applyAllFixes(fixableFindings);

@@ -82,6 +82,11 @@ function formatFindingTTY(finding: Finding): string[] {
   lines.push('');
   lines.push(`  ${chalk.dim(finding.description)}`);
 
+  // Prevention hint (from --suggest-linters)
+  if (finding.prevention) {
+    lines.push(`  ${chalk.cyan(`Preventable: ${finding.prevention}`)}`);
+  }
+
   // Suggested fix diff if available
   if (finding.suggestedFix?.diff) {
     lines.push('');
@@ -122,6 +127,11 @@ function formatFindingCI(finding: Finding): string[] {
 
   // Description
   lines.push(`  ${finding.description}`);
+
+  // Prevention hint (from --suggest-linters)
+  if (finding.prevention) {
+    lines.push(`  Preventable: ${finding.prevention}`);
+  }
 
   return lines;
 }
