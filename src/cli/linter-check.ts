@@ -93,9 +93,15 @@ export function buildLinterCheckPrompt(
       .join('\n');
   });
 
-  return `You are a linter rule expert. For each finding below, determine if a deterministic lint rule (existing or custom) could reliably catch the same class of issue at lint time. Not heuristic, not AI-based: a rule that operates on AST or pattern matching.
+  return `You are a linter rule expert. For each finding below, determine if a custom, domain-specific lint rule could deterministically catch the same class of issue via AST or pattern matching.
 
-If a rule exists, produce a unified diff against the project's linter config file that enables it.
+IMPORTANT:
+- Do NOT suggest well-known generic rules (no-eval, eqeqeq, no-var, etc.). Those are table stakes and already known.
+- Instead, propose custom rules that encode the specific pattern from this codebase. Describe the exact AST shape the rule would match.
+- Example: "ban-exec-template-literal: Flags execSync/execFileSync/exec called with a template literal argument. AST: CallExpression where callee matches exec* and first argument is TemplateLiteral with expressions."
+- The rule must be deterministic and implementable as an ESLint rule visitor, not a heuristic.
+
+If you propose a rule, produce a unified diff against the config file that adds a comment documenting the rule and a TODO to implement it.
 
 Config file: ${config.path}
 \`\`\`
@@ -105,22 +111,22 @@ ${config.contents}
 Findings:
 ${findingEntries.join('\n\n')}
 
-Group related findings under one rule when the same rule catches multiple issues.
+Group related findings under one rule when the same pattern catches multiple issues.
 
 Respond with JSON only. Format:
 {
   "rules": [
     {
-      "rule": "<linter/rule-id>",
-      "description": "<what the rule catches and why>",
+      "rule": "<descriptive-rule-name>",
+      "description": "<exact AST pattern the rule matches and why it catches this class of bug>",
       "findingIds": ["<id1>", "<id2>"],
       "configDiff": "<unified diff against the config file>"
     }
   ]
 }
 
-The configDiff must be a valid unified diff with @@ line markers that can be applied to the config file shown above.
-If no findings are lintable, return {"rules": []}.`;
+The configDiff must be a valid unified diff with @@ line markers.
+If no findings have a deterministic AST pattern, return {"rules": []}.`;
 }
 
 /**

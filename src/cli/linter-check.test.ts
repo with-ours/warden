@@ -126,11 +126,12 @@ describe('buildLinterCheckPrompt', () => {
     expect(prompt).toContain('no-unused-vars');
   });
 
-  it('instructs for deterministic rules only', () => {
+  it('instructs for custom domain-specific rules, not generic ones', () => {
     const prompt = buildLinterCheckPrompt([makeFinding({ id: 'X' })], mockConfig);
 
     expect(prompt).toContain('deterministic');
-    expect(prompt).toContain('not AI-based');
+    expect(prompt).toContain('Do NOT suggest well-known generic rules');
+    expect(prompt).toContain('AST');
   });
 
   it('requests unified diff format', () => {
