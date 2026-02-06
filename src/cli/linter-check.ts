@@ -2,45 +2,76 @@
  * Linter evaluation second pass.
  *
  * After findings are reported, evaluates whether each fixable finding
- * could be caught by a deterministic linter rule. Groups results by
- * linter::rule and renders a PREVENTION section.
+ * could be caught by a deterministic linter rule. Proposes config
+ * changes as fixable findings that flow through the normal fix mechanism.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import chalk from 'chalk';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Finding, UsageStats } from '../types/index.js';
 import { extractBalancedJson } from '../sdk/extract.js';
+import { generateShortId } from '../sdk/extract.js';
 import type { Reporter } from './output/reporter.js';
-import { formatDuration, formatCost, pluralize } from './output/formatters.js';
+import { formatDuration, formatCost } from './output/formatters.js';
 
-/** Verdict for a single finding's lintability. */
-export interface LinterVerdict {
-  findingId: string;
-  detectable: boolean;
-  linter: string | null;
-  rule: string | null;
-  reasoning: string;
+/** Detected linter config file. */
+export interface LinterConfig {
+  path: string;
+  contents: string;
 }
 
-/** Findings grouped by a specific linter rule. */
-export interface GroupedRule {
-  linter: string;
+/** Rule proposal from the LLM. */
+export interface RuleProposal {
   rule: string;
-  findings: Finding[];
+  description: string;
+  findingIds: string[];
+  configDiff: string;
 }
 
 /** Full result of the linter evaluation pass. */
 export interface LinterCheckResult {
-  verdicts: LinterVerdict[];
-  grouped: GroupedRule[];
+  findings: Finding[];
   usage: UsageStats;
   durationMs: number;
 }
 
+/** Config filenames to search for, in priority order. */
+const CONFIG_CANDIDATES = [
+  'eslint.config.js',
+  'eslint.config.mjs',
+  'eslint.config.cjs',
+  'eslint.config.ts',
+  '.eslintrc.json',
+  '.eslintrc.js',
+  '.eslintrc.cjs',
+  '.eslintrc.yml',
+  '.eslintrc.yaml',
+  'biome.json',
+  'biome.jsonc',
+];
+
 /**
- * Build the prompt for evaluating whether findings are linter-detectable.
+ * Detect the linter config file in the repo root.
  */
-export function buildLinterCheckPrompt(findings: Finding[]): string {
+export function detectLinterConfig(repoPath: string): LinterConfig | null {
+  for (const candidate of CONFIG_CANDIDATES) {
+    const fullPath = join(repoPath, candidate);
+    if (existsSync(fullPath)) {
+      const contents = readFileSync(fullPath, 'utf-8');
+      return { path: fullPath, contents };
+    }
+  }
+  return null;
+}
+
+/**
+ * Build the prompt for evaluating findings and proposing lint rules.
+ */
+export function buildLinterCheckPrompt(
+  findings: Finding[],
+  config: LinterConfig
+): string {
   const findingEntries = findings.map((f) => {
     const loc = f.location
       ? `  file: ${f.location.path}:${f.location.startLine}`
@@ -60,77 +91,88 @@ export function buildLinterCheckPrompt(findings: Finding[]): string {
       .join('\n');
   });
 
-  return `You are a linter rule expert. For each finding below, determine if a specific, existing, deterministic linter rule could reliably catch the same class of issue.
+  return `You are a linter rule expert. For each finding below, determine if a deterministic lint rule (existing or custom) could reliably catch the same class of issue at lint time. Not heuristic, not AI-based: a rule that operates on AST or pattern matching.
 
-Requirements:
-- Only flag findings where a real, published linter rule exists
-- The rule must be deterministic (not heuristic, not AI-based)
-- Include the exact linter name and rule identifier
-- The fix diff is the strongest signal: look at what changed
+If a rule exists, produce a unified diff against the project's linter config file that enables it.
+
+Config file: ${config.path}
+\`\`\`
+${config.contents}
+\`\`\`
 
 Findings:
 ${findingEntries.join('\n\n')}
 
+Group related findings under one rule when the same rule catches multiple issues.
+
 Respond with JSON only. Format:
 {
-  "verdicts": [
+  "rules": [
     {
-      "findingId": "<id>",
-      "detectable": true/false,
-      "linter": "<linter name or null>",
-      "rule": "<rule id or null>",
-      "reasoning": "<brief explanation>"
+      "rule": "<linter/rule-id>",
+      "description": "<what the rule catches and why>",
+      "findingIds": ["<id1>", "<id2>"],
+      "configDiff": "<unified diff against the config file>"
     }
   ]
-}`;
+}
+
+The configDiff must be a valid unified diff with @@ line markers that can be applied to the config file shown above.
+If no findings are lintable, return {"rules": []}.`;
 }
 
 /**
- * Group verdicts by linter::rule and attach the original findings.
- * Sorted by finding count descending.
+ * Convert rule proposals into fixable Finding objects.
  */
-export function groupByRule(
-  verdicts: LinterVerdict[],
-  findings: Finding[]
-): GroupedRule[] {
-  const findingMap = new Map(findings.map((f) => [f.id, f]));
-  const groups = new Map<string, GroupedRule>();
+export function proposalsToFindings(
+  proposals: RuleProposal[],
+  configPath: string,
+  originalFindings: Finding[]
+): Finding[] {
+  const findingMap = new Map(originalFindings.map((f) => [f.id, f]));
 
-  for (const v of verdicts) {
-    if (!v.detectable || !v.linter || !v.rule) continue;
+  return proposals
+    .filter((p) => p.configDiff && p.findingIds.length > 0)
+    .map((p) => {
+      const caughtTitles = p.findingIds
+        .map((id) => findingMap.get(id)?.title)
+        .filter(Boolean);
 
-    const key = `${v.linter}::${v.rule}`;
-    let group = groups.get(key);
-    if (!group) {
-      group = { linter: v.linter, rule: v.rule, findings: [] };
-      groups.set(key, group);
-    }
+      const catchesLabel =
+        caughtTitles.length > 0
+          ? `\n\nWould have caught: ${caughtTitles.join(', ')}`
+          : '';
 
-    const finding = findingMap.get(v.findingId);
-    if (finding) {
-      group.findings.push(finding);
-    }
-  }
-
-  return Array.from(groups.values()).sort(
-    (a, b) => b.findings.length - a.findings.length
-  );
+      return {
+        id: generateShortId(),
+        severity: 'info' as const,
+        title: `Prevention: enable ${p.rule}`,
+        description: `${p.description}${catchesLabel}`,
+        location: { path: configPath, startLine: 1 },
+        suggestedFix: {
+          description: `Add ${p.rule} rule to linter config`,
+          diff: p.configDiff,
+        },
+      };
+    });
 }
 
 /**
- * Evaluate findings against known linter rules using a single Haiku call.
+ * Evaluate findings against linter rules using a single Haiku call.
+ * Returns fixable Finding objects targeting the linter config.
  */
 export async function evaluateLinterRules(
   findings: Finding[],
+  config: LinterConfig,
   apiKey: string
 ): Promise<LinterCheckResult> {
   const startTime = Date.now();
-  const prompt = buildLinterCheckPrompt(findings);
+  const prompt = buildLinterCheckPrompt(findings, config);
 
   const client = new Anthropic({ apiKey, timeout: 30_000 });
   const response = await client.messages.create({
     model: 'claude-haiku-4-5',
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [
       { role: 'user', content: prompt },
       { role: 'assistant', content: '{' },
@@ -139,7 +181,6 @@ export async function evaluateLinterRules(
 
   const durationMs = Date.now() - startTime;
 
-  // Build usage stats
   const usage: UsageStats = {
     inputTokens: response.usage.input_tokens,
     outputTokens: response.usage.output_tokens,
@@ -148,38 +189,42 @@ export async function evaluateLinterRules(
     costUSD: estimateHaikuCost(response.usage),
   };
 
-  // Extract JSON from response (prefill means we need to prepend the '{')
+  // Extract JSON from response (prefill means we prepend the '{')
   const content = response.content[0];
   if (!content || content.type !== 'text') {
-    return { verdicts: [], grouped: [], usage, durationMs };
+    return { findings: [], usage, durationMs };
   }
 
   const rawJson = '{' + content.text;
   const jsonStr = extractBalancedJson(rawJson, 0);
   if (!jsonStr) {
-    return { verdicts: [], grouped: [], usage, durationMs };
+    return { findings: [], usage, durationMs };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonStr);
   } catch {
-    return { verdicts: [], grouped: [], usage, durationMs };
+    return { findings: [], usage, durationMs };
   }
 
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
-    !('verdicts' in parsed) ||
-    !Array.isArray((parsed as { verdicts: unknown }).verdicts)
+    !('rules' in parsed) ||
+    !Array.isArray((parsed as { rules: unknown }).rules)
   ) {
-    return { verdicts: [], grouped: [], usage, durationMs };
+    return { findings: [], usage, durationMs };
   }
 
-  const verdicts = (parsed as { verdicts: LinterVerdict[] }).verdicts;
-  const grouped = groupByRule(verdicts, findings);
+  const proposals = (parsed as { rules: RuleProposal[] }).rules;
+  const preventionFindings = proposalsToFindings(
+    proposals,
+    config.path,
+    findings
+  );
 
-  return { verdicts, grouped, usage, durationMs };
+  return { findings: preventionFindings, usage, durationMs };
 }
 
 /**
@@ -202,92 +247,39 @@ function estimateHaikuCost(usage: {
 }
 
 /**
- * Render the PREVENTION section to stderr.
- */
-export function renderLinterCheck(
-  result: LinterCheckResult,
-  reporter: Reporter
-): void {
-  const detectableCount = result.verdicts.filter((v) => v.detectable).length;
-  const totalCount = result.verdicts.length;
-
-  if (detectableCount === 0) {
-    return;
-  }
-
-  reporter.blank();
-
-  if (reporter.mode.isTTY) {
-    console.error(
-      chalk.bold('PREVENTION')
-    );
-    console.error(
-      `  ${detectableCount} of ${totalCount} ${pluralize(totalCount, 'finding')} could be caught by linter rules:`
-    );
-    console.error('');
-
-    for (const group of result.grouped) {
-      const ruleLabel = chalk.cyan(`${group.linter}/${group.rule}`);
-      const countLabel = `${group.findings.length} ${pluralize(group.findings.length, 'finding')}`;
-      console.error(`  ${ruleLabel}  ${countLabel}`);
-
-      for (const f of group.findings) {
-        const id = chalk.dim(f.id);
-        const loc = f.location
-          ? chalk.dim(`  ${f.location.path}:${f.location.startLine}`)
-          : '';
-        console.error(`    ${id} ${f.title}${loc}`);
-      }
-      console.error('');
-    }
-
-    console.error(
-      chalk.dim(
-        `  Evaluated in ${formatDuration(result.durationMs)} · ${formatCost(result.usage.costUSD)}`
-      )
-    );
-  } else {
-    console.error(
-      `PREVENTION: ${detectableCount} of ${totalCount} ${pluralize(totalCount, 'finding')} could be caught by linter rules:`
-    );
-
-    for (const group of result.grouped) {
-      console.error(
-        `  ${group.linter}/${group.rule}  ${group.findings.length} ${pluralize(group.findings.length, 'finding')}`
-      );
-      for (const f of group.findings) {
-        const loc = f.location
-          ? `  ${f.location.path}:${f.location.startLine}`
-          : '';
-        console.error(`    ${f.id} ${f.title}${loc}`);
-      }
-    }
-
-    console.error(
-      `  Evaluated in ${formatDuration(result.durationMs)} · ${formatCost(result.usage.costUSD)}`
-    );
-  }
-}
-
-/**
- * Top-level orchestrator. Runs the linter evaluation pass and renders output.
+ * Top-level orchestrator. Returns prevention findings to merge into the fix flow.
  * Never throws: errors are logged as warnings.
  */
 export async function runLinterCheck(
   findings: Finding[],
+  repoPath: string,
   apiKey: string,
   reporter: Reporter
-): Promise<void> {
+): Promise<Finding[]> {
   if (findings.length === 0) {
-    return;
+    return [];
+  }
+
+  const config = detectLinterConfig(repoPath);
+  if (!config) {
+    reporter.debug('No linter config found, skipping linter evaluation');
+    return [];
   }
 
   try {
-    const result = await evaluateLinterRules(findings, apiKey);
-    renderLinterCheck(result, reporter);
+    reporter.debug('Evaluating findings for linter rule coverage...');
+    const result = await evaluateLinterRules(findings, config, apiKey);
+
+    if (result.findings.length > 0) {
+      reporter.text(
+        `  ${result.findings.length} prevention ${result.findings.length === 1 ? 'fix' : 'fixes'} proposed · ${formatDuration(result.durationMs)} · ${formatCost(result.usage.costUSD)}`
+      );
+    }
+
+    return result.findings;
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : String(err);
+    const message = err instanceof Error ? err.message : String(err);
     reporter.warning(`Linter evaluation failed: ${message}`);
+    return [];
   }
 }

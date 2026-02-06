@@ -5,7 +5,7 @@ import { loadWardenConfig, resolveTrigger } from '../config/loader.js';
 import type { SkillRunnerOptions } from '../sdk/runner.js';
 import { resolveSkillAsync } from '../skills/loader.js';
 import { matchTrigger, shouldFail, countFindingsAtOrAbove } from '../triggers/matcher.js';
-import type { SkillReport } from '../types/index.js';
+import type { Finding, SkillReport } from '../types/index.js';
 import { DEFAULT_CONCURRENCY, getAnthropicApiKey } from '../utils/index.js';
 import { parseCliArgs, showHelp, showVersion, classifyTargets, type CLIOptions } from './args.js';
 import { buildLocalEventContext, buildFileEventContext } from './context.js';
@@ -149,18 +149,19 @@ async function outputResultsAndHandleFixes(
   reporter.renderSummary(filteredReports, totalDuration);
 
   // Linter evaluation (opt-in via --suggest-linters)
+  let preventionFindings: Finding[] = [];
   if (options.suggestLinters && !options.json) {
     const apiKey = getAnthropicApiKey();
     if (apiKey) {
       const fixableForLinterCheck = collectFixableFindings(filteredReports);
-      await runLinterCheck(fixableForLinterCheck, apiKey, reporter);
+      preventionFindings = await runLinterCheck(fixableForLinterCheck, repoPath, apiKey, reporter);
     } else {
       reporter.warning('--suggest-linters requires ANTHROPIC_API_KEY or WARDEN_ANTHROPIC_API_KEY');
     }
   }
 
   // Handle fixes (uses filtered reports - only show fixes for visible findings)
-  const fixableFindings = collectFixableFindings(filteredReports);
+  const fixableFindings = [...collectFixableFindings(filteredReports), ...preventionFindings];
   if (fixableFindings.length > 0) {
     if (options.fix) {
       const fixSummary = applyAllFixes(fixableFindings);
