@@ -32,8 +32,8 @@ export interface RuleProposal {
 /** Full result of the linter evaluation pass. */
 export interface LinterCheckResult {
   findings: Finding[];
-  /** Maps original finding ID -> rule label (e.g. "eslint/no-eval") */
-  preventionMap: Map<string, string>;
+  /** Maps original finding ID -> prevention info for inline display */
+  preventionMap: Map<string, PreventionInfo>;
   usage: UsageStats;
   durationMs: number;
 }
@@ -129,15 +129,21 @@ The configDiff must be a valid unified diff with @@ line markers.
 If no findings have a deterministic AST pattern, return {"rules": []}.`;
 }
 
+/** Prevention info attached to a finding for inline display. */
+export interface PreventionInfo {
+  rule: string;
+  description: string;
+}
+
 /**
- * Build a map from original finding ID to the rule that would prevent it.
+ * Build a map from original finding ID to the prevention info.
  */
-export function buildPreventionMap(proposals: RuleProposal[]): Map<string, string> {
-  const map = new Map<string, string>();
+export function buildPreventionMap(proposals: RuleProposal[]): Map<string, PreventionInfo> {
+  const map = new Map<string, PreventionInfo>();
   for (const p of proposals) {
     if (!p.rule || p.findingIds.length === 0) continue;
     for (const id of p.findingIds) {
-      map.set(id, p.rule);
+      map.set(id, { rule: p.rule, description: p.description });
     }
   }
   return map;
@@ -275,8 +281,8 @@ function estimateHaikuCost(usage: {
 export interface LinterCheckOutput {
   /** Prevention findings (config diffs) for the fix flow */
   fixes: Finding[];
-  /** Maps original finding ID -> rule label for inline display */
-  preventionMap: Map<string, string>;
+  /** Maps original finding ID -> prevention info for inline display */
+  preventionMap: Map<string, PreventionInfo>;
 }
 
 /**

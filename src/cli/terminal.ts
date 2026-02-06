@@ -84,7 +84,9 @@ function formatFindingTTY(finding: Finding): string[] {
 
   // Prevention hint (from --suggest-linters)
   if (finding.prevention) {
-    lines.push(`  ${chalk.cyan(`Preventable: ${finding.prevention}`)}`);
+    lines.push('');
+    lines.push(`  ${chalk.cyan(`Preventable: ${finding.prevention.rule}`)}`);
+    lines.push(`  ${chalk.dim(finding.prevention.description)}`);
   }
 
   // Suggested fix diff if available
@@ -130,7 +132,8 @@ function formatFindingCI(finding: Finding): string[] {
 
   // Prevention hint (from --suggest-linters)
   if (finding.prevention) {
-    lines.push(`  Preventable: ${finding.prevention}`);
+    lines.push(`  Preventable: ${finding.prevention.rule}`);
+    lines.push(`  ${finding.prevention.description}`);
   }
 
   return lines;

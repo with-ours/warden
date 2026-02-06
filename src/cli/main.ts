@@ -149,9 +149,9 @@ async function outputResultsAndHandleFixes(
       if (linterOutput.preventionMap.size > 0) {
         for (const report of filteredReports) {
           for (const finding of report.findings) {
-            const rule = linterOutput.preventionMap.get(finding.id);
-            if (rule) {
-              finding.prevention = rule;
+            const prevention = linterOutput.preventionMap.get(finding.id);
+            if (prevention) {
+              finding.prevention = prevention;
             }
           }
         }

@@ -72,7 +72,10 @@ export const FindingSchema = z.object({
   suggestedFix: SuggestedFixSchema.optional(),
   elapsedMs: z.number().nonnegative().optional(),
   /** Linter rule that could prevent this finding (set by --suggest-linters). */
-  prevention: z.string().optional(),
+  prevention: z.object({
+    rule: z.string(),
+    description: z.string(),
+  }).optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
