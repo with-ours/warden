@@ -3,7 +3,8 @@
  * Apply unified diffs to file content without side effects beyond file I/O.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { parsePatch, type DiffHunk } from '../diff/index.js';
 
 /**
@@ -60,17 +61,25 @@ export function applyHunk(lines: string[], hunk: DiffHunk): string[] {
  * Hunks are applied in reverse order by line number to prevent line shift issues.
  */
 export function applyUnifiedDiff(filePath: string, diff: string): void {
-  if (!existsSync(filePath)) {
-    throw new Error(`File not found: ${filePath}`);
-  }
-
   const hunks = parsePatch(diff);
   if (hunks.length === 0) {
     throw new Error('No valid hunks found in diff');
   }
 
-  const content = readFileSync(filePath, 'utf-8');
-  let lines = content.split('\n');
+  let lines: string[];
+
+  if (!existsSync(filePath)) {
+    // Allow new file creation when all hunks start at line 0 (new-file diff)
+    const isNewFile = hunks.every((h) => h.oldStart === 0);
+    if (!isNewFile) {
+      throw new Error(`File not found: ${filePath}`);
+    }
+    mkdirSync(dirname(filePath), { recursive: true });
+    lines = [];
+  } else {
+    const content = readFileSync(filePath, 'utf-8');
+    lines = content.split('\n');
+  }
 
   // Sort hunks by oldStart in descending order to apply from bottom to top
   const sortedHunks = [...hunks].sort((a, b) => b.oldStart - a.oldStart);

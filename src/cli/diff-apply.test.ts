@@ -190,13 +190,29 @@ describe('applyUnifiedDiff', () => {
     expect(result).toBe('a\nB\nc\nd\ne\nF\ng\n');
   });
 
-  it('throws error for non-existent file', () => {
+  it('throws error for non-existent file with non-new-file diff', () => {
     const filePath = join(testDir, 'nonexistent.ts');
     const diff = `@@ -1,1 +1,1 @@
 -old
 +new`;
 
     expect(() => applyUnifiedDiff(filePath, diff)).toThrow('File not found');
+  });
+
+  it('creates a new file from a new-file diff', () => {
+    const filePath = join(testDir, 'subdir', 'new-rule.js');
+
+    const diff = `--- /dev/null
++++ b/subdir/new-rule.js
+@@ -0,0 +1,3 @@
++module.exports = {
++  create() { return {}; }
++};`;
+
+    applyUnifiedDiff(filePath, diff);
+
+    const result = readFileSync(filePath, 'utf-8');
+    expect(result).toBe('module.exports = {\n  create() { return {}; }\n};');
   });
 
   it('throws error for context mismatch', () => {

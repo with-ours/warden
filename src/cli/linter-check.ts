@@ -2,8 +2,8 @@
  * Linter evaluation second pass.
  *
  * After findings are reported, evaluates whether each fixable finding
- * could be caught by a deterministic linter rule. Proposes config
- * changes as fixable findings that flow through the normal fix mechanism.
+ * could be caught by a custom deterministic linter rule. Generates
+ * complete ESLint rule implementations as fixable findings.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -26,7 +26,8 @@ export interface RuleProposal {
   rule: string;
   description: string;
   findingIds: string[];
-  configDiff: string;
+  rulePath: string;
+  implementation: string;
 }
 
 /** Full result of the linter evaluation pass. */
@@ -72,7 +73,6 @@ export function detectLinterConfig(repoPath: string): LinterConfig | null {
  */
 export function buildLinterCheckPrompt(
   findings: Finding[],
-  config: LinterConfig
 ): string {
   const findingEntries = findings.map((f) => {
     const loc = f.location
@@ -93,39 +93,49 @@ export function buildLinterCheckPrompt(
       .join('\n');
   });
 
-  return `You are a linter rule expert. For each finding below, determine if a custom, domain-specific lint rule could deterministically catch the same class of issue via AST or pattern matching.
+  return `You are a linter rule expert. For each finding below, write a complete, working ESLint rule plugin that deterministically catches the same class of issue via AST pattern matching.
 
 IMPORTANT:
 - Do NOT suggest well-known generic rules (no-eval, eqeqeq, no-var, etc.). Those are table stakes and already known.
-- Instead, propose custom rules that encode the specific pattern from this codebase. Describe the exact AST shape the rule would match.
-- Example: "ban-exec-template-literal: Flags execSync/execFileSync/exec called with a template literal argument. AST: CallExpression where callee matches exec* and first argument is TemplateLiteral with expressions."
+- Instead, write custom rules that encode the specific pattern from the findings. Each rule must be a complete, runnable ESLint plugin module.
 - The rule must be deterministic and implementable as an ESLint rule visitor, not a heuristic.
-
-If you propose a rule, produce a unified diff against the config file that adds a comment documenting the rule and a TODO to implement it.
-
-Config file: ${config.path}
-\`\`\`
-${config.contents}
-\`\`\`
+- Group related findings under one rule when the same pattern catches multiple issues.
 
 Findings:
 ${findingEntries.join('\n\n')}
-
-Group related findings under one rule when the same pattern catches multiple issues.
 
 Respond with JSON only. Format:
 {
   "rules": [
     {
       "rule": "<descriptive-rule-name>",
-      "description": "<exact AST pattern the rule matches and why it catches this class of bug>",
+      "description": "<what the rule catches and why>",
       "findingIds": ["<id1>", "<id2>"],
-      "configDiff": "<unified diff against the config file>"
+      "rulePath": "eslint-rules/<rule-name>.js",
+      "implementation": "<complete ESLint rule module source code>"
     }
   ]
 }
 
-The configDiff must be a valid unified diff with @@ line markers.
+Each implementation must be a complete CommonJS module that exports an ESLint rule object with meta (type, docs, messages, schema) and create function returning AST visitors. Example structure:
+
+module.exports = {
+  meta: {
+    type: "problem",
+    docs: { description: "..." },
+    messages: { found: "..." },
+    schema: [],
+  },
+  create(context) {
+    return {
+      CallExpression(node) {
+        // ... AST checks ...
+        context.report({ node, messageId: "found" });
+      },
+    };
+  },
+};
+
 If no findings have a deterministic AST pattern, return {"rules": []}.`;
 }
 
@@ -150,17 +160,31 @@ export function buildPreventionMap(proposals: RuleProposal[]): Map<string, Preve
 }
 
 /**
+ * Convert an implementation string into a new-file unified diff.
+ */
+export function implementationToDiff(rulePath: string, implementation: string): string {
+  const lines = implementation.split('\n');
+  const header = [
+    `--- /dev/null`,
+    `+++ b/${rulePath}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+  ].join('\n');
+  const body = lines.map((l) => `+${l}`).join('\n');
+  return `${header}\n${body}`;
+}
+
+/**
  * Convert rule proposals into fixable Finding objects.
  */
 export function proposalsToFindings(
   proposals: RuleProposal[],
-  configPath: string,
+  repoPath: string,
   originalFindings: Finding[]
 ): Finding[] {
   const findingMap = new Map(originalFindings.map((f) => [f.id, f]));
 
   return proposals
-    .filter((p) => p.configDiff && p.findingIds.length > 0)
+    .filter((p) => p.implementation && p.rulePath && p.findingIds.length > 0)
     .map((p) => {
       const caughtTitles = p.findingIds
         .map((id) => findingMap.get(id)?.title)
@@ -171,15 +195,18 @@ export function proposalsToFindings(
           ? `\n\nWould have caught: ${caughtTitles.join(', ')}`
           : '';
 
+      const fullPath = join(repoPath, p.rulePath);
+      const diff = implementationToDiff(p.rulePath, p.implementation);
+
       return {
         id: generateShortId(),
         severity: 'info' as const,
-        title: `Prevention: enable ${p.rule}`,
+        title: `Prevention: ${p.rule}`,
         description: `${p.description}${catchesLabel}`,
-        location: { path: configPath, startLine: 1 },
+        location: { path: fullPath, startLine: 1 },
         suggestedFix: {
-          description: `Add ${p.rule} rule to linter config`,
-          diff: p.configDiff,
+          description: `Create ESLint rule: ${p.rulePath}`,
+          diff,
         },
       };
     });
@@ -191,16 +218,16 @@ export function proposalsToFindings(
  */
 export async function evaluateLinterRules(
   findings: Finding[],
-  config: LinterConfig,
+  repoPath: string,
   apiKey: string
 ): Promise<LinterCheckResult> {
   const startTime = Date.now();
-  const prompt = buildLinterCheckPrompt(findings, config);
+  const prompt = buildLinterCheckPrompt(findings);
 
-  const client = new Anthropic({ apiKey, timeout: 30_000 });
+  const client = new Anthropic({ apiKey, timeout: 60_000 });
   const response = await client.messages.create({
     model: 'claude-haiku-4-5',
-    max_tokens: 4096,
+    max_tokens: 8192,
     messages: [
       { role: 'user', content: prompt },
       { role: 'assistant', content: '{' },
@@ -250,7 +277,7 @@ export async function evaluateLinterRules(
   const proposals = (parsed as { rules: RuleProposal[] }).rules;
   const preventionFindings = proposalsToFindings(
     proposals,
-    config.path,
+    repoPath,
     findings
   );
   const preventionMap = buildPreventionMap(proposals);
@@ -301,15 +328,9 @@ export async function runLinterCheck(
     return empty;
   }
 
-  const config = detectLinterConfig(repoPath);
-  if (!config) {
-    reporter.debug('No linter config found, skipping linter evaluation');
-    return empty;
-  }
-
   try {
     reporter.debug('Evaluating findings for linter rule coverage...');
-    const result = await evaluateLinterRules(findings, config, apiKey);
+    const result = await evaluateLinterRules(findings, repoPath, apiKey);
 
     if (result.findings.length > 0) {
       reporter.text(

@@ -6,10 +6,10 @@ import type { Finding } from '../types/index.js';
 import {
   buildLinterCheckPrompt,
   proposalsToFindings,
+  implementationToDiff,
   detectLinterConfig,
   evaluateLinterRules,
   type RuleProposal,
-  type LinterConfig,
 } from './linter-check.js';
 
 // Mock Anthropic SDK as a class constructor
@@ -36,19 +36,23 @@ function makeFinding(overrides: Partial<Finding> & { id: string }): Finding {
   };
 }
 
-const mockConfig: LinterConfig = {
-  path: '/repo/eslint.config.js',
-  contents: `import eslint from "@eslint/js";
-export default [
-  eslint.configs.recommended,
-  {
-    rules: {
-      "no-unused-vars": "error",
-    },
+const SAMPLE_IMPLEMENTATION = `module.exports = {
+  meta: {
+    type: "problem",
+    docs: { description: "Ban eval() calls" },
+    messages: { found: "Do not use eval()" },
+    schema: [],
   },
-];
-`,
-};
+  create(context) {
+    return {
+      CallExpression(node) {
+        if (node.callee.name === "eval") {
+          context.report({ node, messageId: "found" });
+        }
+      },
+    };
+  },
+};`;
 
 describe('detectLinterConfig', () => {
   let testDir: string;
@@ -112,33 +116,48 @@ describe('buildLinterCheckPrompt', () => {
       makeFinding({ id: 'K7M-X9P', title: 'Missing await on async call' }),
     ];
 
-    const prompt = buildLinterCheckPrompt(findings, mockConfig);
+    const prompt = buildLinterCheckPrompt(findings);
 
     expect(prompt).toContain('K7M-X9P');
     expect(prompt).toContain('Missing await on async call');
     expect(prompt).toContain('await doSomething()');
   });
 
-  it('includes the config file contents', () => {
-    const prompt = buildLinterCheckPrompt([makeFinding({ id: 'X' })], mockConfig);
-
-    expect(prompt).toContain('eslint.config.js');
-    expect(prompt).toContain('no-unused-vars');
-  });
-
   it('instructs for custom domain-specific rules, not generic ones', () => {
-    const prompt = buildLinterCheckPrompt([makeFinding({ id: 'X' })], mockConfig);
+    const prompt = buildLinterCheckPrompt([makeFinding({ id: 'X' })]);
 
     expect(prompt).toContain('deterministic');
     expect(prompt).toContain('Do NOT suggest well-known generic rules');
     expect(prompt).toContain('AST');
   });
 
-  it('requests unified diff format', () => {
-    const prompt = buildLinterCheckPrompt([makeFinding({ id: 'X' })], mockConfig);
+  it('requests implementation with meta and create', () => {
+    const prompt = buildLinterCheckPrompt([makeFinding({ id: 'X' })]);
 
-    expect(prompt).toContain('unified diff');
-    expect(prompt).toContain('configDiff');
+    expect(prompt).toContain('implementation');
+    expect(prompt).toContain('rulePath');
+    expect(prompt).toContain('meta');
+    expect(prompt).toContain('create');
+  });
+});
+
+describe('implementationToDiff', () => {
+  it('generates a new-file unified diff', () => {
+    const diff = implementationToDiff('eslint-rules/no-eval.js', 'line1\nline2\nline3');
+
+    expect(diff).toContain('--- /dev/null');
+    expect(diff).toContain('+++ b/eslint-rules/no-eval.js');
+    expect(diff).toContain('@@ -0,0 +1,3 @@');
+    expect(diff).toContain('+line1');
+    expect(diff).toContain('+line2');
+    expect(diff).toContain('+line3');
+  });
+
+  it('handles single-line implementation', () => {
+    const diff = implementationToDiff('rules/x.js', 'module.exports = {};');
+
+    expect(diff).toContain('@@ -0,0 +1,1 @@');
+    expect(diff).toContain('+module.exports = {};');
   });
 });
 
@@ -149,68 +168,72 @@ describe('proposalsToFindings', () => {
     makeFinding({ id: 'C', title: 'Weak random' }),
   ];
 
-  it('converts proposals to findings with config diffs', () => {
+  it('converts proposals to findings with rule implementations', () => {
     const proposals: RuleProposal[] = [
       {
-        rule: 'no-eval',
+        rule: 'ban-eval-calls',
         description: 'Bans eval() calls',
         findingIds: ['A'],
-        configDiff: '@@ -5,1 +5,2 @@\n rules: {\n+  "no-eval": "error",',
+        rulePath: 'eslint-rules/ban-eval-calls.js',
+        implementation: SAMPLE_IMPLEMENTATION,
       },
     ];
 
-    const findings = proposalsToFindings(proposals, '/repo/eslint.config.js', originalFindings);
+    const findings = proposalsToFindings(proposals, '/repo', originalFindings);
 
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.title).toBe('Prevention: enable no-eval');
+    expect(findings[0]!.title).toBe('Prevention: ban-eval-calls');
     expect(findings[0]!.severity).toBe('info');
-    expect(findings[0]!.location!.path).toBe('/repo/eslint.config.js');
-    expect(findings[0]!.suggestedFix!.diff).toContain('no-eval');
+    expect(findings[0]!.location!.path).toBe('/repo/eslint-rules/ban-eval-calls.js');
+    expect(findings[0]!.suggestedFix!.diff).toContain('+module.exports');
+    expect(findings[0]!.suggestedFix!.diff).toContain('--- /dev/null');
+    expect(findings[0]!.suggestedFix!.description).toContain('ban-eval-calls');
     expect(findings[0]!.description).toContain('eval() usage');
   });
 
   it('groups multiple finding IDs under one rule', () => {
     const proposals: RuleProposal[] = [
       {
-        rule: 'security/detect-child-process',
+        rule: 'ban-child-process',
         description: 'Detects shell injection',
         findingIds: ['A', 'B'],
-        configDiff: '@@ -1,1 +1,2 @@\n+// rule added',
+        rulePath: 'eslint-rules/ban-child-process.js',
+        implementation: SAMPLE_IMPLEMENTATION,
       },
     ];
 
-    const findings = proposalsToFindings(proposals, '/repo/config.js', originalFindings);
+    const findings = proposalsToFindings(proposals, '/repo', originalFindings);
 
     expect(findings).toHaveLength(1);
     expect(findings[0]!.description).toContain('eval() usage');
     expect(findings[0]!.description).toContain('Command injection');
   });
 
-  it('filters out proposals without a diff', () => {
+  it('filters out proposals without implementation', () => {
     const proposals: RuleProposal[] = [
-      { rule: 'no-eval', description: 'Bans eval', findingIds: ['A'], configDiff: '' },
+      { rule: 'no-eval', description: 'Bans eval', findingIds: ['A'], rulePath: 'eslint-rules/x.js', implementation: '' },
     ];
 
-    const findings = proposalsToFindings(proposals, '/repo/config.js', originalFindings);
+    const findings = proposalsToFindings(proposals, '/repo', originalFindings);
     expect(findings).toHaveLength(0);
   });
 
   it('filters out proposals with no finding IDs', () => {
     const proposals: RuleProposal[] = [
-      { rule: 'no-eval', description: 'Bans eval', findingIds: [], configDiff: 'some diff' },
+      { rule: 'no-eval', description: 'Bans eval', findingIds: [], rulePath: 'eslint-rules/x.js', implementation: SAMPLE_IMPLEMENTATION },
     ];
 
-    const findings = proposalsToFindings(proposals, '/repo/config.js', originalFindings);
+    const findings = proposalsToFindings(proposals, '/repo', originalFindings);
     expect(findings).toHaveLength(0);
   });
 
   it('generates unique IDs for each finding', () => {
     const proposals: RuleProposal[] = [
-      { rule: 'no-eval', description: 'a', findingIds: ['A'], configDiff: 'diff1' },
-      { rule: 'eqeqeq', description: 'b', findingIds: ['B'], configDiff: 'diff2' },
+      { rule: 'rule-a', description: 'a', findingIds: ['A'], rulePath: 'eslint-rules/a.js', implementation: SAMPLE_IMPLEMENTATION },
+      { rule: 'rule-b', description: 'b', findingIds: ['B'], rulePath: 'eslint-rules/b.js', implementation: SAMPLE_IMPLEMENTATION },
     ];
 
-    const findings = proposalsToFindings(proposals, '/repo/config.js', originalFindings);
+    const findings = proposalsToFindings(proposals, '/repo', originalFindings);
     expect(findings[0]!.id).not.toBe(findings[1]!.id);
   });
 });
@@ -221,6 +244,7 @@ describe('evaluateLinterRules', () => {
   });
 
   it('parses valid response into prevention findings', async () => {
+    const impl = 'module.exports = { create() { return {}; } };';
     mockCreate.mockResolvedValue({
       content: [
         {
@@ -228,10 +252,11 @@ describe('evaluateLinterRules', () => {
           text: `
   "rules": [
     {
-      "rule": "no-eval",
+      "rule": "ban-eval-calls",
       "description": "Bans eval() calls which enable arbitrary code execution",
       "findingIds": ["A1B-C2D"],
-      "configDiff": "@@ -5,1 +5,2 @@\\n rules: {\\n+  \\"no-eval\\": \\"error\\","
+      "rulePath": "eslint-rules/ban-eval-calls.js",
+      "implementation": ${JSON.stringify(impl)}
     }
   ]
 }`,
@@ -239,18 +264,18 @@ describe('evaluateLinterRules', () => {
       ],
       usage: {
         input_tokens: 500,
-        output_tokens: 100,
+        output_tokens: 200,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
       },
     });
 
     const findings = [makeFinding({ id: 'A1B-C2D', title: 'eval() usage' })];
-    const result = await evaluateLinterRules(findings, mockConfig, 'test-key');
+    const result = await evaluateLinterRules(findings, '/repo', 'test-key');
 
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]!.title).toContain('no-eval');
-    expect(result.findings[0]!.suggestedFix!.diff).toContain('no-eval');
+    expect(result.findings[0]!.title).toContain('ban-eval-calls');
+    expect(result.findings[0]!.suggestedFix!.diff).toContain('+module.exports');
     expect(result.usage.inputTokens).toBe(500);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
@@ -261,7 +286,7 @@ describe('evaluateLinterRules', () => {
       usage: { input_tokens: 100, output_tokens: 50 },
     });
 
-    const result = await evaluateLinterRules([makeFinding({ id: 'X' })], mockConfig, 'test-key');
+    const result = await evaluateLinterRules([makeFinding({ id: 'X' })], '/repo', 'test-key');
 
     expect(result.findings).toHaveLength(0);
   });
@@ -272,7 +297,7 @@ describe('evaluateLinterRules', () => {
       usage: { input_tokens: 100, output_tokens: 20 },
     });
 
-    const result = await evaluateLinterRules([makeFinding({ id: 'X' })], mockConfig, 'test-key');
+    const result = await evaluateLinterRules([makeFinding({ id: 'X' })], '/repo', 'test-key');
 
     expect(result.findings).toHaveLength(0);
   });
@@ -283,7 +308,7 @@ describe('evaluateLinterRules', () => {
       usage: { input_tokens: 100, output_tokens: 50 },
     });
 
-    await evaluateLinterRules([makeFinding({ id: 'X' })], mockConfig, 'test-key');
+    await evaluateLinterRules([makeFinding({ id: 'X' })], '/repo', 'test-key');
 
     const callArgs = mockCreate.mock.calls[0]![0];
     expect(callArgs.messages).toHaveLength(2);
@@ -291,17 +316,17 @@ describe('evaluateLinterRules', () => {
     expect(callArgs.model).toBe('claude-haiku-4-5');
   });
 
-  it('includes config contents in the prompt', async () => {
+  it('includes finding details in the prompt', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '"rules": []}' }],
       usage: { input_tokens: 100, output_tokens: 50 },
     });
 
-    await evaluateLinterRules([makeFinding({ id: 'X' })], mockConfig, 'test-key');
+    await evaluateLinterRules([makeFinding({ id: 'X', title: 'Test finding' })], '/repo', 'test-key');
 
     const callArgs = mockCreate.mock.calls[0]![0];
     const userMessage = callArgs.messages[0].content;
-    expect(userMessage).toContain('no-unused-vars');
-    expect(userMessage).toContain('eslint.config.js');
+    expect(userMessage).toContain('Test finding');
+    expect(userMessage).toContain('implementation');
   });
 });
