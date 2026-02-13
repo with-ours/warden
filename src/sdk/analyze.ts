@@ -633,7 +633,7 @@ export async function analyzeFile(
 /**
  * Generate a summary of findings.
  */
-export function generateSummary(skillName: string, findings: Finding[]): string {
+export function generateSummary(skillName: string, findings: Finding[], skillDescription?: string): string {
   if (findings.length === 0) {
     return `${skillName}: No issues found`;
   }
@@ -650,7 +650,11 @@ export function generateSummary(skillName: string, findings: Finding[]): string 
   if (counts['low']) parts.push(`${counts['low']} low`);
   if (counts['info']) parts.push(`${counts['info']} info`);
 
-  return `${skillName}: Found ${findings.length} issue${findings.length === 1 ? '' : 's'} (${parts.join(', ')})`;
+  const stats = `Found ${findings.length} issue${findings.length === 1 ? '' : 's'} (${parts.join(', ')})`;
+  if (skillDescription) {
+    return `${skillDescription}\n\n${stats}`;
+  }
+  return `${skillName}: ${stats}`;
 }
 
 /**
@@ -822,8 +826,8 @@ export async function runSkill(
   const uniqueFindings = deduplicateFindings(allFindings);
   emitDedupMetrics(allFindings.length, uniqueFindings.length);
 
-  // Generate summary
-  const summary = generateSummary(skill.name, uniqueFindings);
+  // Generate summary, including skill description when findings exist
+  const summary = generateSummary(skill.name, uniqueFindings, skill.description);
 
   // Aggregate usage across all hunks
   const totalUsage = aggregateUsage(allUsage);
