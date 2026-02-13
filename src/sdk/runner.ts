@@ -26,7 +26,7 @@ export { apiUsageToStats } from './pricing.js';
 
 // Re-export prompt building (with legacy alias)
 export { buildHunkSystemPrompt, buildHunkUserPrompt } from './prompt.js';
-export type { PRPromptContext } from './prompt.js';
+export type { PRPromptContext, PriorFindingsContext } from './prompt.js';
 // Legacy export for backwards compatibility
 export { buildHunkSystemPrompt as buildSystemPrompt } from './prompt.js';
 

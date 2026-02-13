@@ -91,6 +91,8 @@ export const SkillConfigSchema = z.object({
   ignorePaths: z.array(z.string()).optional(),
   /** Remote repository reference for the skill (e.g., "owner/repo" or "owner/repo@sha") */
   remote: z.string().optional(),
+  /** Execution phase (default: 1). Phase-2 skills receive phase-1 findings in their prompt. */
+  phase: z.number().int().positive().default(1).optional(),
   // Flattened output fields (skill-level defaults)
   failOn: SeverityThresholdSchema.optional(),
   reportOn: SeverityThresholdSchema.optional(),

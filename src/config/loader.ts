@@ -98,6 +98,8 @@ export interface ResolvedTrigger {
   maxTurns?: number;
   /** Schedule-specific configuration */
   schedule?: ScheduleConfig;
+  /** Execution phase (default: 1). Phase-2 skills receive phase-1 findings in their prompt. */
+  phase?: number;
 }
 
 /**
@@ -164,6 +166,7 @@ export function resolveSkillConfigs(
         failCheck: skill.failCheck ?? defaults?.failCheck,
         model: baseModel,
         maxTurns: skill.maxTurns ?? defaults?.maxTurns,
+        phase: skill.phase,
       });
     } else {
       for (const trigger of skill.triggers) {
@@ -184,6 +187,7 @@ export function resolveSkillConfigs(
           model: emptyToUndefined(trigger.model) ?? baseModel,
           maxTurns: trigger.maxTurns ?? skill.maxTurns ?? defaults?.maxTurns,
           schedule: trigger.schedule,
+          phase: skill.phase,
         });
       }
     }

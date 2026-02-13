@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { config as dotenvConfig } from 'dotenv';
 import { Sentry, flushSentry } from '../sentry.js';
 import { loadWardenConfig, resolveSkillConfigs } from '../config/loader.js';
-import type { SkillRunnerOptions } from '../sdk/runner.js';
+import { groupByPhase } from '../pipeline/index.js';
 import { resolveSkillAsync } from '../skills/loader.js';
 import { matchTrigger, filterContextByPaths, shouldFail, countFindingsAtOrAbove } from '../triggers/matcher.js';
 import type { SkillReport } from '../types/index.js';
@@ -90,6 +90,7 @@ interface SkillToRun {
   skill: string;
   remote?: string;
   filters: { paths?: string[]; ignorePaths?: string[] };
+  phase?: number;
 }
 
 interface ProcessedResults {
@@ -253,7 +254,7 @@ async function runSkills(
         seen.add(t.skill);
         return true;
       })
-      .map((t) => ({ skill: t.skill, remote: t.remote, filters: t.filters }));
+      .map((t) => ({ skill: t.skill, remote: t.remote, filters: t.filters, phase: t.phase }));
   } else {
     skillsToRun = [];
   }
@@ -269,41 +270,63 @@ async function runSkills(
     return 0;
   }
 
-  // Build skill tasks
+  // Build skill tasks grouped by phase
   // Model precedence: defaults.model > CLI flag > WARDEN_MODEL env var > SDK default
   const model = config?.defaults?.model ?? options.model ?? process.env['WARDEN_MODEL'];
-  const runnerOptions: SkillRunnerOptions = {
-    apiKey,
-    model,
-    abortController,
-    maxTurns: config?.defaults?.maxTurns,
-    batchDelayMs: config?.defaults?.batchDelayMs,
-  };
-  const tasks: SkillTaskOptions[] = skillsToRun.map(({ skill, remote, filters }) => ({
-    name: skill,
-    failOn: options.failOn,
-    resolveSkill: () => resolveSkillAsync(skill, repoPath, {
-      remote,
-      offline: options.offline,
-    }),
-    context: filterContextByPaths(context, filters),
-    runnerOptions,
-  }));
-
-  // Run skills with Ink UI (TTY) or simple console output (non-TTY)
   const concurrency = options.parallel ?? DEFAULT_CONCURRENCY;
   const taskOptions = {
     mode: reporter.mode,
     verbosity: reporter.verbosity,
     concurrency,
   };
-  const results = reporter.mode.isTTY
-    ? await runSkillTasksWithInk(tasks, taskOptions)
-    : await runSkillTasks(tasks, taskOptions);
+
+  // Group skills by phase
+  const byPhase = new Map<number, typeof skillsToRun>();
+  for (const s of skillsToRun) {
+    const phase = s.phase ?? 1;
+    const existing = byPhase.get(phase);
+    if (existing) {
+      existing.push(s);
+    } else {
+      byPhase.set(phase, [s]);
+    }
+  }
+  const sortedPhases = [...byPhase.entries()].sort(([a], [b]) => a - b);
+
+  let allResults: Awaited<ReturnType<typeof runSkillTasks>> = [];
+  let priorReports: SkillReport[] = [];
+
+  for (const [, phaseSkills] of sortedPhases) {
+    const tasks: SkillTaskOptions[] = phaseSkills.map(({ skill, remote, filters }) => ({
+      name: skill,
+      failOn: options.failOn,
+      resolveSkill: () => resolveSkillAsync(skill, repoPath, {
+        remote,
+        offline: options.offline,
+      }),
+      context: filterContextByPaths(context, filters),
+      runnerOptions: {
+        apiKey,
+        model,
+        abortController,
+        maxTurns: config?.defaults?.maxTurns,
+        batchDelayMs: config?.defaults?.batchDelayMs,
+        priorReports: priorReports.length > 0 ? priorReports : undefined,
+      },
+    }));
+
+    const results = reporter.mode.isTTY
+      ? await runSkillTasksWithInk(tasks, taskOptions)
+      : await runSkillTasks(tasks, taskOptions);
+
+    const reports = results.flatMap((r) => r.report ? [r.report] : []);
+    priorReports = [...priorReports, ...reports];
+    allResults = [...allResults, ...results];
+  }
 
   // Process results and output
   const totalDuration = Date.now() - startTime;
-  const processed = processTaskResults(results, options.reportOn);
+  const processed = processTaskResults(allResults, options.reportOn);
   return outputResultsAndHandleFixes(processed, options, reporter, repoPath ?? cwd, totalDuration);
 }
 
@@ -515,38 +538,50 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
     reporter.debug('No API key found. Using Claude Code subscription auth.');
   }
 
-  // Build trigger tasks
-  const tasks: SkillTaskOptions[] = triggersToRun.map((trigger) => ({
-    name: trigger.name,
-    displayName: trigger.skill,
-    failOn: trigger.failOn ?? options.failOn,
-    resolveSkill: () => resolveSkillAsync(trigger.skill, repoPath, {
-      remote: trigger.remote,
-      offline: options.offline,
-    }),
-    context: filterContextByPaths(context, trigger.filters),
-    runnerOptions: {
-      apiKey,
-      model: trigger.model,
-      abortController,
-      maxTurns: trigger.maxTurns,
-    },
-  }));
-
-  // Run triggers with Ink UI (TTY) or simple console output (non-TTY)
+  // Group triggers by phase and run each phase sequentially
+  const byPhase = groupByPhase(triggersToRun);
   const concurrency = options.parallel ?? config.runner?.concurrency ?? DEFAULT_CONCURRENCY;
   const taskOptions = {
     mode: reporter.mode,
     verbosity: reporter.verbosity,
     concurrency,
   };
-  const results = reporter.mode.isTTY
-    ? await runSkillTasksWithInk(tasks, taskOptions)
-    : await runSkillTasks(tasks, taskOptions);
+
+  let allResults: Awaited<ReturnType<typeof runSkillTasks>> = [];
+  let priorReports: SkillReport[] = [];
+
+  for (const [, phaseTriggers] of byPhase) {
+    const tasks: SkillTaskOptions[] = phaseTriggers.map((trigger) => ({
+      name: trigger.name,
+      displayName: trigger.skill,
+      failOn: trigger.failOn ?? options.failOn,
+      resolveSkill: () => resolveSkillAsync(trigger.skill, repoPath, {
+        remote: trigger.remote,
+        offline: options.offline,
+      }),
+      context: filterContextByPaths(context, trigger.filters),
+      runnerOptions: {
+        apiKey,
+        model: trigger.model,
+        abortController,
+        maxTurns: trigger.maxTurns,
+        priorReports: priorReports.length > 0 ? priorReports : undefined,
+      },
+    }));
+
+    const results = reporter.mode.isTTY
+      ? await runSkillTasksWithInk(tasks, taskOptions)
+      : await runSkillTasks(tasks, taskOptions);
+
+    // Collect reports for next phase
+    const reports = results.flatMap((r) => r.report ? [r.report] : []);
+    priorReports = [...priorReports, ...reports];
+    allResults = [...allResults, ...results];
+  }
 
   // Process results and output
   const totalDuration = Date.now() - startTime;
-  const processed = processTaskResults(results, options.reportOn);
+  const processed = processTaskResults(allResults, options.reportOn);
   return outputResultsAndHandleFixes(processed, options, reporter, repoPath, totalDuration);
 }
 

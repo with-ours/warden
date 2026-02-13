@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SkillDefinition } from '../config/schema.js';
+import type { SkillReport } from '../types/index.js';
 import { formatHunkForAnalysis, type HunkWithContext } from '../diff/index.js';
 
 /**
@@ -17,6 +18,51 @@ export interface PRPromptContext {
   title?: string;
   /** PR description/body - explains why and provides additional context */
   body?: string | null;
+}
+
+/**
+ * Prior findings from earlier-phase skills, injected into prompts
+ * for second-pass skills.
+ */
+export interface PriorFindingsContext {
+  /** Findings from prior-phase skills, grouped by skill */
+  reports: SkillReport[];
+}
+
+/**
+ * Serialize prior findings for a specific file into a prompt section.
+ * Only includes findings whose location matches the given filename.
+ * Returns undefined if no relevant findings exist.
+ */
+function serializePriorFindings(
+  priorFindings: PriorFindingsContext,
+  filename: string
+): string | undefined {
+  const lines: string[] = [];
+
+  for (const report of priorFindings.reports) {
+    const relevant = report.findings.filter(
+      (f) => f.location?.path === filename
+    );
+    if (relevant.length === 0) continue;
+
+    lines.push(`### ${report.skill}`);
+    for (const finding of relevant) {
+      const loc = finding.location;
+      const locStr = loc
+        ? `${loc.path}:${loc.startLine}${loc.endLine ? `-${loc.endLine}` : ''}`
+        : 'general';
+      lines.push(`- **[${finding.severity}] ${finding.title}** (${locStr})`);
+      lines.push(`  ${finding.description}`);
+      if (finding.suggestedFix) {
+        lines.push(`  Suggested fix: ${finding.suggestedFix.description}`);
+      }
+    }
+  }
+
+  if (lines.length === 0) return undefined;
+
+  return `## Prior Findings\nThe following findings were reported by earlier-phase skills for this file:\n\n${lines.join('\n')}`;
 }
 
 /**
@@ -108,7 +154,8 @@ You can read files from ${dirList} subdirectories using the Read tool with the f
 export function buildHunkUserPrompt(
   skill: SkillDefinition,
   hunkCtx: HunkWithContext,
-  prContext?: PRPromptContext
+  prContext?: PRPromptContext,
+  priorFindings?: PriorFindingsContext
 ): string {
   const sections: string[] = [];
 
@@ -126,6 +173,14 @@ export function buildHunkUserPrompt(
       prSection += `\n\n**Description:**\n${body}`;
     }
     sections.push(prSection);
+  }
+
+  // Include prior findings from earlier-phase skills (between PR context and diff)
+  if (priorFindings) {
+    const priorSection = serializePriorFindings(priorFindings, hunkCtx.filename);
+    if (priorSection) {
+      sections.push(priorSection);
+    }
   }
 
   // Include list of other files being changed in the PR for context

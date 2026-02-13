@@ -18,6 +18,7 @@ import type { ExistingComment } from '../../output/dedup.js';
 import { buildAnalyzedScope, findStaleComments, resolveStaleComments } from '../../output/stale.js';
 import type { EventContext, SkillReport, Finding } from '../../types/index.js';
 import { processInBatches } from '../../utils/index.js';
+import { groupByPhase } from '../../pipeline/index.js';
 import { evaluateFixAttempts, postThreadReply } from '../fix-evaluation/index.js';
 import type { FixEvaluation } from '../fix-evaluation/index.js';
 import { logAction, warnAction } from '../../cli/output/tty.js';
@@ -229,7 +230,9 @@ async function setupGitHubState(
 }
 
 /**
- * Run all matched triggers in parallel batches.
+ * Run all matched triggers, grouped by phase.
+ * Within each phase triggers run in parallel batches.
+ * Prior-phase reports are threaded forward to later phases.
  */
 async function executeAllTriggers(
   matchedTriggers: ResolvedTrigger[],
@@ -241,23 +244,36 @@ async function executeAllTriggers(
   const concurrency = config.runner?.concurrency ?? inputs.parallel;
   const claudePath = await findClaudeCodeExecutable();
 
-  return processInBatches(
-    matchedTriggers,
-    (trigger) =>
-      executeTrigger(trigger, {
-        octokit,
-        context,
-        config,
-        anthropicApiKey: inputs.anthropicApiKey,
-        claudePath,
-        globalFailOn: inputs.failOn,
-        globalReportOn: inputs.reportOn,
-        globalMaxFindings: inputs.maxFindings,
-        globalRequestChanges: inputs.requestChanges,
-        globalFailCheck: inputs.failCheck,
-      }),
-    concurrency
-  );
+  const byPhase = groupByPhase(matchedTriggers);
+  let allResults: TriggerResult[] = [];
+  let priorReports: SkillReport[] = [];
+
+  for (const [, phaseTriggers] of byPhase) {
+    const results = await processInBatches(
+      phaseTriggers,
+      (trigger) =>
+        executeTrigger(trigger, {
+          octokit,
+          context,
+          config,
+          anthropicApiKey: inputs.anthropicApiKey,
+          claudePath,
+          globalFailOn: inputs.failOn,
+          globalReportOn: inputs.reportOn,
+          globalMaxFindings: inputs.maxFindings,
+          globalRequestChanges: inputs.requestChanges,
+          globalFailCheck: inputs.failCheck,
+          priorReports: priorReports.length > 0 ? priorReports : undefined,
+        }),
+      concurrency
+    );
+
+    const reports = results.flatMap((r) => r.report ? [r.report] : []);
+    priorReports = [...priorReports, ...reports];
+    allResults = [...allResults, ...results];
+  }
+
+  return allResults;
 }
 
 /**

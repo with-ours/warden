@@ -6,7 +6,7 @@ import { Sentry, emitExtractionMetrics, emitRetryMetric, emitDedupMetrics } from
 import { SkillRunnerError, WardenAuthenticationError, isRetryableError, isAuthenticationError, isAuthenticationErrorMessage } from './errors.js';
 import { DEFAULT_RETRY_CONFIG, calculateRetryDelay, sleep } from './retry.js';
 import { extractUsage, aggregateUsage, emptyUsage, estimateTokens, aggregateAuxiliaryUsage } from './usage.js';
-import { buildHunkSystemPrompt, buildHunkUserPrompt, type PRPromptContext } from './prompt.js';
+import { buildHunkSystemPrompt, buildHunkUserPrompt, type PRPromptContext, type PriorFindingsContext } from './prompt.js';
 import { extractFindingsJson, extractFindingsWithLLM, validateFindings, deduplicateFindings } from './extract.js';
 import {
   LARGE_PROMPT_THRESHOLD_CHARS,
@@ -340,7 +340,10 @@ async function analyzeHunk(
       const { apiKey, abortController, retry } = options;
 
       const systemPrompt = buildHunkSystemPrompt(skill);
-      const userPrompt = buildHunkUserPrompt(skill, hunkCtx, prContext);
+      const priorFindings: PriorFindingsContext | undefined = options.priorReports?.length
+        ? { reports: options.priorReports }
+        : undefined;
+      const userPrompt = buildHunkUserPrompt(skill, hunkCtx, prContext, priorFindings);
 
       // Report prompt size information
       const systemChars = systemPrompt.length;

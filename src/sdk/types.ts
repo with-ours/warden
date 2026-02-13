@@ -1,4 +1,4 @@
-import type { Finding, UsageStats, SkippedFile, RetryConfig } from '../types/index.js';
+import type { Finding, UsageStats, SkippedFile, RetryConfig, SkillReport } from '../types/index.js';
 import type { HunkWithContext } from '../diff/index.js';
 import type { ChunkingConfig } from '../config/schema.js';
 
@@ -75,6 +75,8 @@ export interface SkillRunnerOptions {
   retry?: RetryConfig;
   /** Enable verbose logging for retry attempts */
   verbose?: boolean;
+  /** Prior-phase skill reports, injected into prompts for second-pass skills */
+  priorReports?: SkillReport[];
 }
 
 /**

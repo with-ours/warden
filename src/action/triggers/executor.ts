@@ -54,6 +54,8 @@ export interface TriggerExecutorDeps {
   globalRequestChanges?: boolean;
   /** Global fail-check from action inputs (trigger-specific takes precedence) */
   globalFailCheck?: boolean;
+  /** Prior-phase skill reports, injected into prompts for second-pass skills */
+  priorReports?: SkillReport[];
 }
 
 /**
@@ -134,6 +136,7 @@ export async function executeTrigger(
             maxTurns: trigger.maxTurns,
             batchDelayMs: config.defaults?.batchDelayMs,
             pathToClaudeCodeExecutable: claudePath,
+            priorReports: deps.priorReports,
           },
         };
 
