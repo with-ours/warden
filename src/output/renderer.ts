@@ -55,7 +55,7 @@ function renderReview(
     if (findingsWithoutLocation.length > 0) {
       return {
         event,
-        body: renderFindingsBody(findingsWithoutLocation, report.skill),
+        body: renderFindingsBody(findingsWithoutLocation, report.skill, report.summary),
         comments: [],
       };
     }
@@ -105,7 +105,7 @@ function renderReview(
 
   // Include locationless findings in the review body when mixed with inline comments
   const body = findingsWithoutLocation.length > 0
-    ? renderFindingsBody(findingsWithoutLocation, report.skill)
+    ? renderFindingsBody(findingsWithoutLocation, report.skill, report.summary)
     : '';
 
   return {
@@ -261,8 +261,14 @@ function renderFindingItem(finding: Finding): string {
 }
 
 /** Render findings as markdown for inclusion in a review body. */
-export function renderFindingsBody(findings: Finding[], skill: string): string {
+export function renderFindingsBody(findings: Finding[], skill: string, summary?: string): string {
   const lines: string[] = [];
+  if (summary) {
+    lines.push(`### ${skill}`);
+    lines.push('');
+    lines.push(summary);
+    lines.push('');
+  }
   for (const finding of findings) {
     const emoji = SEVERITY_EMOJI[finding.severity];
     const location = finding.location
