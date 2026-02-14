@@ -334,7 +334,7 @@ export async function runSkillTask(
 
         const report: SkillReport = {
           skill: skill.name,
-          summary: generateSummary(skill.name, uniqueFindings),
+          summary: generateSummary(skill.name, uniqueFindings, skill.description),
           findings: uniqueFindings,
           usage: aggregateUsage(allUsage),
           durationMs: duration,
