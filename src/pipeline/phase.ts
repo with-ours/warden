@@ -1,29 +1,26 @@
 /**
  * Phase grouping utility for multi-pass skill execution.
  *
- * Groups triggers by their `phase` field (defaulting to 1)
+ * Groups items by their `phase` field (defaulting to 1)
  * and returns them sorted by phase ascending.
  */
 
-import type { ResolvedTrigger } from '../config/loader.js';
-
 /**
- * Group triggers by execution phase, sorted ascending.
- * Triggers without a phase default to phase 1.
+ * Group items by execution phase, sorted ascending.
+ * Items without a phase default to phase 1.
  */
-export function groupByPhase(triggers: ResolvedTrigger[]): Map<number, ResolvedTrigger[]> {
-  const grouped = new Map<number, ResolvedTrigger[]>();
+export function groupByPhase<T extends { phase?: number }>(items: T[]): Map<number, T[]> {
+  const grouped = new Map<number, T[]>();
 
-  for (const trigger of triggers) {
-    const phase = trigger.phase ?? 1;
+  for (const item of items) {
+    const phase = item.phase ?? 1;
     const existing = grouped.get(phase);
     if (existing) {
-      existing.push(trigger);
+      existing.push(item);
     } else {
-      grouped.set(phase, [trigger]);
+      grouped.set(phase, [item]);
     }
   }
 
-  // Return a new Map with keys sorted ascending
   return new Map([...grouped.entries()].sort(([a], [b]) => a - b));
 }

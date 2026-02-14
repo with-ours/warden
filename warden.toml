@@ -18,6 +18,15 @@ type = "pull_request"
 actions = ["opened", "synchronize", "reopened"]
 
 [[skills]]
+name = "warden-lint-judge"
+remote = "getsentry/skills"
+scope = "report"
+
+[[skills.triggers]]
+type = "pull_request"
+actions = ["opened", "synchronize", "reopened"]
+
+[[skills]]
 name = "code-simplifier"
 remote = "getsentry/sentry-skills"
 

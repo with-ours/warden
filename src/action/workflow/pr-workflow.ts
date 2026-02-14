@@ -245,8 +245,8 @@ async function executeAllTriggers(
   const claudePath = await findClaudeCodeExecutable();
 
   const byPhase = groupByPhase(matchedTriggers);
-  let allResults: TriggerResult[] = [];
-  let priorReports: SkillReport[] = [];
+  const allResults: TriggerResult[] = [];
+  const priorReports: SkillReport[] = [];
 
   for (const [, phaseTriggers] of byPhase) {
     const results = await processInBatches(
@@ -269,8 +269,8 @@ async function executeAllTriggers(
     );
 
     const reports = results.flatMap((r) => r.report ? [r.report] : []);
-    priorReports = [...priorReports, ...reports];
-    allResults = [...allResults, ...results];
+    priorReports.push(...reports);
+    allResults.push(...results);
   }
 
   return allResults;

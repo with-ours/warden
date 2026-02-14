@@ -6,7 +6,7 @@ import { Sentry, emitExtractionMetrics, emitRetryMetric, emitDedupMetrics } from
 import { SkillRunnerError, WardenAuthenticationError, isRetryableError, isAuthenticationError, isAuthenticationErrorMessage } from './errors.js';
 import { DEFAULT_RETRY_CONFIG, calculateRetryDelay, sleep } from './retry.js';
 import { extractUsage, aggregateUsage, emptyUsage, estimateTokens, aggregateAuxiliaryUsage } from './usage.js';
-import { buildHunkSystemPrompt, buildHunkUserPrompt, type PRPromptContext, type PriorFindingsContext } from './prompt.js';
+import { buildHunkSystemPrompt, buildHunkUserPrompt, buildReportUserPrompt, type PRPromptContext, type PriorFindingsContext } from './prompt.js';
 import { extractFindingsJson, extractFindingsWithLLM, validateFindings, deduplicateFindings } from './extract.js';
 import {
   LARGE_PROMPT_THRESHOLD_CHARS,
@@ -631,6 +631,73 @@ export async function analyzeFile(
 }
 
 /**
+ * Analyze prior findings as a whole (report-scoped skill).
+ * Makes a single SDK call instead of per-hunk iteration.
+ */
+export async function analyzeReport(
+  skill: SkillDefinition,
+  repoPath: string,
+  options: SkillRunnerOptions,
+  prContext?: PRPromptContext
+): Promise<{ findings: Finding[]; usage: UsageStats; failed: boolean; auxiliaryUsage?: AuxiliaryUsageEntry[] }> {
+  return Sentry.startSpan(
+    {
+      op: 'skill.analyze_report',
+      name: `analyze report ${skill.name}`,
+      attributes: { 'skill.name': skill.name, 'skill.scope': 'report' },
+    },
+    async (span) => {
+      const { apiKey } = options;
+
+      const systemPrompt = buildHunkSystemPrompt(skill);
+      const priorFindings: PriorFindingsContext | undefined = options.priorReports?.length
+        ? { reports: options.priorReports }
+        : undefined;
+      const userPrompt = buildReportUserPrompt(skill, prContext, priorFindings);
+
+      try {
+        const { result: resultMessage, authError } = await executeQuery(systemPrompt, userPrompt, repoPath, options, skill.name);
+
+        if (authError) {
+          throw new WardenAuthenticationError(authError);
+        }
+
+        if (!resultMessage) {
+          return { findings: [], usage: emptyUsage(), failed: true };
+        }
+
+        const usage = extractUsage(resultMessage);
+
+        const isError = resultMessage.is_error || resultMessage.subtype !== 'success';
+        if (isError) {
+          return { findings: [], usage, failed: true };
+        }
+
+        // Report-scoped findings don't have a single filename context.
+        // Pass empty string — parseHunkOutput validates/fills location from the finding itself.
+        const parseResult = await parseHunkOutput(resultMessage, '', apiKey);
+
+        span.setAttribute('finding.count', parseResult.findings.length);
+
+        return {
+          findings: parseResult.findings,
+          usage,
+          failed: false,
+          auxiliaryUsage: parseResult.extractionUsage
+            ? [{ agent: 'extraction', usage: parseResult.extractionUsage }]
+            : undefined,
+        };
+      } catch (error) {
+        if (error instanceof WardenAuthenticationError) throw error;
+        if (isAuthenticationError(error)) throw new WardenAuthenticationError();
+        console.error(`Report analysis failed: ${error instanceof Error ? error.message : String(error)}`);
+        return { findings: [], usage: emptyUsage(), failed: true };
+      }
+    },
+  );
+}
+
+/**
  * Generate a summary of findings.
  */
 export function generateSummary(skillName: string, findings: Finding[], skillDescription?: string): string {
@@ -670,6 +737,25 @@ export async function runSkill(
 
   if (!context.pullRequest) {
     throw new SkillRunnerError('Pull request context required for skill execution');
+  }
+
+  // Report-scoped: single SDK call on prior findings, skip per-file loop
+  if (options.scope === 'report') {
+    const prContext: PRPromptContext = {
+      changedFiles: context.pullRequest.files.map((f) => f.filename),
+      title: context.pullRequest.title,
+      body: context.pullRequest.body,
+    };
+    const result = await analyzeReport(skill, context.repoPath, options, prContext);
+    const uniqueFindings = deduplicateFindings(result.findings);
+    return {
+      skill: skill.name,
+      summary: generateSummary(skill.name, uniqueFindings, skill.description),
+      findings: uniqueFindings,
+      usage: result.usage,
+      durationMs: Date.now() - startTime,
+      ...(result.auxiliaryUsage && { auxiliaryUsage: aggregateAuxiliaryUsage(result.auxiliaryUsage) }),
+    };
   }
 
   const { files: fileHunks, skippedFiles } = prepareFiles(context, {

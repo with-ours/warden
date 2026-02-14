@@ -25,7 +25,7 @@ export { aggregateUsage, aggregateAuxiliaryUsage, mergeAuxiliaryUsage, estimateT
 export { apiUsageToStats } from './pricing.js';
 
 // Re-export prompt building (with legacy alias)
-export { buildHunkSystemPrompt, buildHunkUserPrompt } from './prompt.js';
+export { buildHunkSystemPrompt, buildHunkUserPrompt, buildReportUserPrompt, serializeAllPriorFindings } from './prompt.js';
 export type { PRPromptContext, PriorFindingsContext } from './prompt.js';
 // Legacy export for backwards compatibility
 export { buildHunkSystemPrompt as buildSystemPrompt } from './prompt.js';
@@ -46,7 +46,7 @@ export type { ExtractFindingsResult } from './extract.js';
 export { prepareFiles } from './prepare.js';
 
 // Re-export analysis functions
-export { analyzeFile, runSkill, generateSummary } from './analyze.js';
+export { analyzeFile, analyzeReport, runSkill, generateSummary } from './analyze.js';
 
 // Re-export types
 export type {

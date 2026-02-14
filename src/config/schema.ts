@@ -93,6 +93,8 @@ export const SkillConfigSchema = z.object({
   remote: z.string().optional(),
   /** Execution phase (default: 1). Phase-2 skills receive phase-1 findings in their prompt. */
   phase: z.number().int().positive().default(1).optional(),
+  /** Execution scope: 'diff' (default) analyzes hunks, 'report' analyzes prior findings as a whole. */
+  scope: z.enum(['diff', 'report']).default('diff').optional(),
   // Flattened output fields (skill-level defaults)
   failOn: SeverityThresholdSchema.optional(),
   reportOn: SeverityThresholdSchema.optional(),

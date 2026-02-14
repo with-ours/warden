@@ -137,6 +137,7 @@ export async function executeTrigger(
             batchDelayMs: config.defaults?.batchDelayMs,
             pathToClaudeCodeExecutable: claudePath,
             priorReports: deps.priorReports,
+            scope: trigger.scope,
           },
         };
 

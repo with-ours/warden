@@ -100,6 +100,8 @@ export interface ResolvedTrigger {
   schedule?: ScheduleConfig;
   /** Execution phase (default: 1). Phase-2 skills receive phase-1 findings in their prompt. */
   phase?: number;
+  /** Execution scope: 'diff' (default) analyzes hunks, 'report' analyzes prior findings as a whole. */
+  scope?: 'diff' | 'report';
 }
 
 /**
@@ -150,6 +152,10 @@ export function resolveSkillConfigs(
       ignorePaths: mergedIgnorePaths.length > 0 ? mergedIgnorePaths : undefined,
     };
 
+    // Report-scoped skills always run after all diff-scoped skills
+    const scope = skill.scope === 'report' ? 'report' : undefined;
+    const effectivePhase = scope === 'report' ? Infinity : skill.phase;
+
     if (!skill.triggers || skill.triggers.length === 0) {
       // Wildcard: no triggers means run everywhere
       result.push({
@@ -166,7 +172,8 @@ export function resolveSkillConfigs(
         failCheck: skill.failCheck ?? defaults?.failCheck,
         model: baseModel,
         maxTurns: skill.maxTurns ?? defaults?.maxTurns,
-        phase: skill.phase,
+        phase: effectivePhase,
+        scope,
       });
     } else {
       for (const trigger of skill.triggers) {
@@ -187,7 +194,8 @@ export function resolveSkillConfigs(
           model: emptyToUndefined(trigger.model) ?? baseModel,
           maxTurns: trigger.maxTurns ?? skill.maxTurns ?? defaults?.maxTurns,
           schedule: trigger.schedule,
-          phase: skill.phase,
+          phase: effectivePhase,
+          scope,
         });
       }
     }

@@ -9,6 +9,7 @@ import { Sentry, emitSkillMetrics, emitDedupMetrics, logger } from '../../sentry
 import {
   prepareFiles,
   analyzeFile,
+  analyzeReport,
   aggregateUsage,
   aggregateAuxiliaryUsage,
   deduplicateFindings,
@@ -176,6 +177,53 @@ export async function runSkillTask(
         // Resolve the skill
         const skill = await resolveSkill();
 
+        // Build PR context for inclusion in prompts (if available)
+        const prContext: PRPromptContext | undefined = context.pullRequest
+          ? {
+              changedFiles: context.pullRequest.files.map((f) => f.filename),
+              title: context.pullRequest.title,
+              body: context.pullRequest.body,
+            }
+          : undefined;
+
+        // Report-scoped: single SDK call on prior findings, skip per-file loop
+        if (runnerOptions.scope === 'report') {
+          callbacks.onSkillStart({
+            name,
+            displayName,
+            status: 'running',
+            startTime,
+            files: [],
+            findings: [],
+          });
+
+          const result = await analyzeReport(skill, context.repoPath, runnerOptions, prContext);
+          const uniqueFindings = deduplicateFindings(result.findings);
+          const duration = Date.now() - startTime;
+
+          const report: SkillReport = {
+            skill: skill.name,
+            summary: generateSummary(skill.name, uniqueFindings, skill.description),
+            findings: uniqueFindings,
+            usage: result.usage,
+            durationMs: duration,
+          };
+          if (result.auxiliaryUsage) {
+            report.auxiliaryUsage = aggregateAuxiliaryUsage(result.auxiliaryUsage);
+          }
+
+          emitSkillMetrics(report);
+          callbacks.onSkillUpdate(name, {
+            status: 'done',
+            durationMs: duration,
+            findings: uniqueFindings,
+            usage: report.usage,
+          });
+          callbacks.onSkillComplete(name, report);
+
+          return { name, report, failOn };
+        }
+
         // Prepare files (parse patches into hunks)
         const { files: preparedFiles, skippedFiles } = prepareFiles(context, {
           contextLines: runnerOptions.contextLines,
@@ -215,15 +263,6 @@ export async function runSkillTask(
           files: fileStates,
           findings: [],
         });
-
-        // Build PR context for inclusion in prompts (if available)
-        const prContext: PRPromptContext | undefined = context.pullRequest
-          ? {
-              changedFiles: context.pullRequest.files.map((f) => f.filename),
-              title: context.pullRequest.title,
-              body: context.pullRequest.body,
-            }
-          : undefined;
 
         // Process files with concurrency
         const processFile = async (prepared: PreparedFile, index: number): Promise<FileProcessResult> => {

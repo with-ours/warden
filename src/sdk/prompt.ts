@@ -30,6 +30,26 @@ export interface PriorFindingsContext {
 }
 
 /**
+ * Serialize a list of findings into markdown lines.
+ * Shared by both file-scoped and report-scoped serializers.
+ */
+function serializeFindingsList(findings: SkillReport['findings']): string[] {
+  const lines: string[] = [];
+  for (const finding of findings) {
+    const loc = finding.location;
+    const locStr = loc
+      ? `${loc.path}:${loc.startLine}${loc.endLine ? `-${loc.endLine}` : ''}`
+      : 'general';
+    lines.push(`- **[${finding.severity}] ${finding.title}** (${locStr})`);
+    lines.push(`  ${finding.description}`);
+    if (finding.suggestedFix) {
+      lines.push(`  Suggested fix: ${finding.suggestedFix.description}`);
+    }
+  }
+  return lines;
+}
+
+/**
  * Serialize prior findings for a specific file into a prompt section.
  * Only includes findings whose location matches the given filename.
  * Returns undefined if no relevant findings exist.
@@ -47,22 +67,52 @@ function serializePriorFindings(
     if (relevant.length === 0) continue;
 
     lines.push(`### ${report.skill}`);
-    for (const finding of relevant) {
-      const loc = finding.location;
-      const locStr = loc
-        ? `${loc.path}:${loc.startLine}${loc.endLine ? `-${loc.endLine}` : ''}`
-        : 'general';
-      lines.push(`- **[${finding.severity}] ${finding.title}** (${locStr})`);
-      lines.push(`  ${finding.description}`);
-      if (finding.suggestedFix) {
-        lines.push(`  Suggested fix: ${finding.suggestedFix.description}`);
-      }
-    }
+    lines.push(...serializeFindingsList(relevant));
   }
 
   if (lines.length === 0) return undefined;
 
   return `## Prior Findings\nThe following findings were reported by earlier-phase skills for this file:\n\n${lines.join('\n')}`;
+}
+
+/**
+ * Serialize all prior findings (across all files) into a prompt section.
+ * Used by report-scoped skills that analyze findings as a whole.
+ * Returns undefined if no findings exist.
+ */
+export function serializeAllPriorFindings(
+  priorFindings: PriorFindingsContext
+): string | undefined {
+  const lines: string[] = [];
+
+  for (const report of priorFindings.reports) {
+    if (report.findings.length === 0) continue;
+
+    lines.push(`### ${report.skill}`);
+    lines.push(...serializeFindingsList(report.findings));
+  }
+
+  if (lines.length === 0) return undefined;
+
+  return `## Prior Findings\nThe following findings were reported by earlier-phase skills:\n\n${lines.join('\n')}`;
+}
+
+/**
+ * Format PR context (title + truncated body) as a prompt section.
+ * Returns undefined if no title is available.
+ */
+function formatPRContext(prContext?: PRPromptContext): string | undefined {
+  if (!prContext?.title) return undefined;
+
+  let section = `## Pull Request Context\n**Title:** ${prContext.title}`;
+  if (prContext.body) {
+    const maxBodyLength = 1000;
+    const body = prContext.body.length > maxBodyLength
+      ? prContext.body.slice(0, maxBodyLength) + '...'
+      : prContext.body;
+    section += `\n\n**Description:**\n${body}`;
+  }
+  return section;
 }
 
 /**
@@ -161,19 +211,8 @@ export function buildHunkUserPrompt(
 
   sections.push(`Analyze this code change according to the "${skill.name}" skill criteria.`);
 
-  // Include PR title and description for context on intent
-  if (prContext?.title) {
-    let prSection = `## Pull Request Context\n**Title:** ${prContext.title}`;
-    if (prContext.body) {
-      // Truncate very long PR descriptions to avoid bloating prompts
-      const maxBodyLength = 1000;
-      const body = prContext.body.length > maxBodyLength
-        ? prContext.body.slice(0, maxBodyLength) + '...'
-        : prContext.body;
-      prSection += `\n\n**Description:**\n${body}`;
-    }
-    sections.push(prSection);
-  }
+  const prSection = formatPRContext(prContext);
+  if (prSection) sections.push(prSection);
 
   // Include prior findings from earlier-phase skills (between PR context and diff)
   if (priorFindings) {
@@ -192,6 +231,42 @@ ${otherFiles.map((f) => `- ${f}`).join('\n')}`);
   }
 
   sections.push(formatHunkForAnalysis(hunkCtx));
+
+  sections.push(
+    `IMPORTANT: Only report findings that are explicitly covered by the skill instructions. Do not report general code quality issues, bugs, or improvements unless the skill specifically asks for them. Return an empty findings array if no issues match the skill's criteria.`
+  );
+
+  return sections.join('\n\n');
+}
+
+/**
+ * Builds the user prompt for a report-scoped skill.
+ * Report-scoped skills analyze all prior findings as a whole (single SDK call, no diff).
+ */
+export function buildReportUserPrompt(
+  skill: SkillDefinition,
+  prContext?: PRPromptContext,
+  priorFindings?: PriorFindingsContext
+): string {
+  const sections: string[] = [];
+
+  sections.push(`Analyze the findings from prior skills according to the "${skill.name}" skill criteria.`);
+
+  const prSection = formatPRContext(prContext);
+  if (prSection) sections.push(prSection);
+
+  // Include changed files list for context
+  if (prContext?.changedFiles && prContext.changedFiles.length > 0) {
+    sections.push(`## Changed Files\nThe following files were changed in this PR:\n${prContext.changedFiles.map((f) => `- ${f}`).join('\n')}`);
+  }
+
+  // Include all prior findings
+  if (priorFindings) {
+    const priorSection = serializeAllPriorFindings(priorFindings);
+    if (priorSection) {
+      sections.push(priorSection);
+    }
+  }
 
   sections.push(
     `IMPORTANT: Only report findings that are explicitly covered by the skill instructions. Do not report general code quality issues, bugs, or improvements unless the skill specifically asks for them. Return an empty findings array if no issues match the skill's criteria.`

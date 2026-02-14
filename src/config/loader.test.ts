@@ -739,3 +739,108 @@ describe('defaults.ignorePaths config', () => {
     expect(result.data?.defaults?.ignorePaths).toEqual(['dist/**', 'node_modules/**']);
   });
 });
+
+describe('scope config', () => {
+  it('accepts scope = "diff" in skill', () => {
+    const config = {
+      version: 1,
+      skills: [{ name: 'test', scope: 'diff' }],
+    };
+
+    const result = WardenConfigSchema.safeParse(config);
+    expect(result.success).toBe(true);
+    expect(result.data?.skills[0]?.scope).toBe('diff');
+  });
+
+  it('accepts scope = "report" in skill', () => {
+    const config = {
+      version: 1,
+      skills: [{ name: 'test', scope: 'report' }],
+    };
+
+    const result = WardenConfigSchema.safeParse(config);
+    expect(result.success).toBe(true);
+    expect(result.data?.skills[0]?.scope).toBe('report');
+  });
+
+  it('defaults scope to "diff"', () => {
+    const config = {
+      version: 1,
+      skills: [{ name: 'test' }],
+    };
+
+    const result = WardenConfigSchema.safeParse(config);
+    expect(result.success).toBe(true);
+    expect(result.data?.skills[0]?.scope).toBe('diff');
+  });
+
+  it('rejects invalid scope values', () => {
+    const config = {
+      version: 1,
+      skills: [{ name: 'test', scope: 'invalid' }],
+    };
+
+    const result = WardenConfigSchema.safeParse(config);
+    expect(result.success).toBe(false);
+  });
+
+  it('report-scoped triggers get forced to last phase (Infinity)', () => {
+    const config: WardenConfig = {
+      version: 1,
+      skills: [
+        { name: 'diff-skill', phase: 1 },
+        { name: 'report-skill', scope: 'report', phase: 1 },
+      ],
+    };
+
+    const resolved = resolveSkillConfigs(config);
+    const diffSkill = resolved.find((t) => t.name === 'diff-skill');
+    const reportSkill = resolved.find((t) => t.name === 'report-skill');
+
+    expect(diffSkill?.phase).toBe(1);
+    expect(reportSkill?.phase).toBe(Infinity);
+    expect(reportSkill?.scope).toBe('report');
+  });
+
+  it('report-scoped triggers override explicit phase', () => {
+    const config: WardenConfig = {
+      version: 1,
+      skills: [
+        { name: 'report-skill', scope: 'report', phase: 2 },
+      ],
+    };
+
+    const [resolved] = resolveSkillConfigs(config);
+    expect(resolved?.phase).toBe(Infinity);
+  });
+
+  it('diff-scoped triggers preserve their phase', () => {
+    const config: WardenConfig = {
+      version: 1,
+      skills: [
+        { name: 'diff-skill', scope: 'diff', phase: 3 },
+      ],
+    };
+
+    const [resolved] = resolveSkillConfigs(config);
+    expect(resolved?.phase).toBe(3);
+    expect(resolved?.scope).toBeUndefined();
+  });
+
+  it('scope is threaded through trigger entries', () => {
+    const config: WardenConfig = {
+      version: 1,
+      skills: [{
+        name: 'report-skill',
+        scope: 'report',
+        triggers: [
+          { type: 'pull_request', actions: ['opened'] },
+        ],
+      }],
+    };
+
+    const [resolved] = resolveSkillConfigs(config);
+    expect(resolved?.scope).toBe('report');
+    expect(resolved?.phase).toBe(Infinity);
+  });
+});

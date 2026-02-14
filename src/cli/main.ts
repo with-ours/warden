@@ -91,6 +91,7 @@ interface SkillToRun {
   remote?: string;
   filters: { paths?: string[]; ignorePaths?: string[] };
   phase?: number;
+  scope?: 'diff' | 'report';
 }
 
 interface ProcessedResults {
@@ -254,7 +255,7 @@ async function runSkills(
         seen.add(t.skill);
         return true;
       })
-      .map((t) => ({ skill: t.skill, remote: t.remote, filters: t.filters, phase: t.phase }));
+      .map((t) => ({ skill: t.skill, remote: t.remote, filters: t.filters, phase: t.phase, scope: t.scope }));
   } else {
     skillsToRun = [];
   }
@@ -281,23 +282,13 @@ async function runSkills(
   };
 
   // Group skills by phase
-  const byPhase = new Map<number, typeof skillsToRun>();
-  for (const s of skillsToRun) {
-    const phase = s.phase ?? 1;
-    const existing = byPhase.get(phase);
-    if (existing) {
-      existing.push(s);
-    } else {
-      byPhase.set(phase, [s]);
-    }
-  }
-  const sortedPhases = [...byPhase.entries()].sort(([a], [b]) => a - b);
+  const byPhase = groupByPhase(skillsToRun);
 
-  let allResults: Awaited<ReturnType<typeof runSkillTasks>> = [];
-  let priorReports: SkillReport[] = [];
+  const allResults: Awaited<ReturnType<typeof runSkillTasks>> = [];
+  const priorReports: SkillReport[] = [];
 
-  for (const [, phaseSkills] of sortedPhases) {
-    const tasks: SkillTaskOptions[] = phaseSkills.map(({ skill, remote, filters }) => ({
+  for (const [, phaseSkills] of byPhase) {
+    const tasks: SkillTaskOptions[] = phaseSkills.map(({ skill, remote, filters, scope }) => ({
       name: skill,
       failOn: options.failOn,
       resolveSkill: () => resolveSkillAsync(skill, repoPath, {
@@ -312,6 +303,7 @@ async function runSkills(
         maxTurns: config?.defaults?.maxTurns,
         batchDelayMs: config?.defaults?.batchDelayMs,
         priorReports: priorReports.length > 0 ? priorReports : undefined,
+        scope,
       },
     }));
 
@@ -320,8 +312,8 @@ async function runSkills(
       : await runSkillTasks(tasks, taskOptions);
 
     const reports = results.flatMap((r) => r.report ? [r.report] : []);
-    priorReports = [...priorReports, ...reports];
-    allResults = [...allResults, ...results];
+    priorReports.push(...reports);
+    allResults.push(...results);
   }
 
   // Process results and output
@@ -547,8 +539,8 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
     concurrency,
   };
 
-  let allResults: Awaited<ReturnType<typeof runSkillTasks>> = [];
-  let priorReports: SkillReport[] = [];
+  const allResults: Awaited<ReturnType<typeof runSkillTasks>> = [];
+  const priorReports: SkillReport[] = [];
 
   for (const [, phaseTriggers] of byPhase) {
     const tasks: SkillTaskOptions[] = phaseTriggers.map((trigger) => ({
@@ -566,6 +558,7 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
         abortController,
         maxTurns: trigger.maxTurns,
         priorReports: priorReports.length > 0 ? priorReports : undefined,
+        scope: trigger.scope,
       },
     }));
 
@@ -575,8 +568,8 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
 
     // Collect reports for next phase
     const reports = results.flatMap((r) => r.report ? [r.report] : []);
-    priorReports = [...priorReports, ...reports];
-    allResults = [...allResults, ...results];
+    priorReports.push(...reports);
+    allResults.push(...results);
   }
 
   // Process results and output

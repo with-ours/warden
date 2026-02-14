@@ -77,6 +77,8 @@ export interface SkillRunnerOptions {
   verbose?: boolean;
   /** Prior-phase skill reports, injected into prompts for second-pass skills */
   priorReports?: SkillReport[];
+  /** Execution scope: 'report' runs a single analysis on prior findings instead of per-hunk */
+  scope?: 'diff' | 'report';
 }
 
 /**
