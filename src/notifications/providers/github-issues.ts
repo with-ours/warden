@@ -210,10 +210,7 @@ function renderIssueBody(
     const lineRange = finding.location.endLine
       ? `L${finding.location.startLine}-L${finding.location.endLine}`
       : `L${finding.location.startLine}`;
-    const anchor = finding.location.endLine
-      ? `L${finding.location.startLine}-L${finding.location.endLine}`
-      : `L${finding.location.startLine}`;
-    const link = `https://github.com/${owner}/${repo}/blob/${commitSha}/${finding.location.path}#${anchor}`;
+    const link = `https://github.com/${owner}/${repo}/blob/${commitSha}/${finding.location.path}#${lineRange}`;
 
     lines.push('### Location');
     lines.push('');
@@ -316,6 +313,20 @@ export class GitHubIssuesProvider implements NotificationProvider {
       `warden:${skillName}`,
     ];
 
+    // Ensure labels exist before creating any issues
+    for (const label of labels) {
+      try {
+        await this.octokit.issues.getLabel({ owner, repo, name: label });
+      } catch {
+        await this.octokit.issues.createLabel({
+          owner,
+          repo,
+          name: label,
+          color: label === FALSE_POSITIVE_LABEL ? 'cccccc' : '7057ff',
+        });
+      }
+    }
+
     for (const [i, { finding }] of unmatchedFindings.entries()) {
       if (semanticMatches.has(i)) {
         result.skipped++;
@@ -327,20 +338,6 @@ export class GitHubIssuesProvider implements NotificationProvider {
       const body = renderIssueBody(finding, skillName, commitSha, owner, repo, hash);
 
       try {
-        // Ensure labels exist
-        for (const label of labels) {
-          try {
-            await this.octokit.issues.getLabel({ owner, repo, name: label });
-          } catch {
-            await this.octokit.issues.createLabel({
-              owner,
-              repo,
-              name: label,
-              color: label === FALSE_POSITIVE_LABEL ? 'cccccc' : '7057ff',
-            });
-          }
-        }
-
         await this.octokit.issues.create({
           owner,
           repo,

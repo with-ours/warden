@@ -137,19 +137,13 @@ export async function runScheduleWorkflow(
 
       // Dispatch notifications for findings
       if (providers.length > 0) {
-        const dispatchResult = await dispatcher.dispatch({
+        await dispatcher.dispatch({
           findings: report.findings,
           reports: [report],
           repository: { owner, name: repo },
           commitSha: headSha,
           skillName: resolved.name,
         });
-
-        for (const r of dispatchResult.results) {
-          if (r.sent > 0) {
-            console.log(`${r.provider}: ${r.sent} notification${r.sent === 1 ? '' : 's'} sent`);
-          }
-        }
       }
 
       // Create fix PR if enabled and there are fixable findings
