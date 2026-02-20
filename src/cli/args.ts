@@ -56,7 +56,7 @@ export interface SetupAppOptions {
 }
 
 export interface ParsedArgs {
-  command: 'run' | 'help' | 'init' | 'add' | 'version' | 'setup-app' | 'sync';
+  command: 'run' | 'help' | 'init' | 'add' | 'version' | 'setup-app' | 'sync' | 'replay';
   options: CLIOptions;
   setupAppOptions?: SetupAppOptions;
 }
@@ -74,6 +74,7 @@ Commands:
   init                 Initialize warden.toml and GitHub workflow
   add [skill]          Add a skill trigger to warden.toml
   sync [remote]        Update cached remote skills to latest
+  replay <file...>     Replay results from JSONL log files
   setup-app            Create a GitHub App for Warden via manifest flow
   (default)            Run analysis on targets or using warden.toml triggers
 
@@ -150,6 +151,8 @@ Examples:
   warden sync                             # Update all unpinned remote skills
   warden setup-app                        # Create GitHub App interactively
   warden setup-app --org myorg            # Create app under organization
+  warden replay .warden/logs/2026-02-20*.jsonl
+                                          # Replay results from log files
 `;
 
 export function showHelp(): void {
@@ -313,7 +316,7 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
   }
 
   // Filter out known commands from positionals
-  const commands = ['run', 'help', 'init', 'add', 'version', 'setup-app', 'sync'];
+  const commands = ['run', 'help', 'init', 'add', 'version', 'setup-app', 'sync', 'replay'];
   const targets = positionals.filter((p) => !commands.includes(p));
 
   // Handle explicit help command
@@ -394,6 +397,28 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
         name: values.name as string | undefined,
         open: !values['no-open'],
       },
+    };
+  }
+
+  // Handle replay command
+  if (positionals.includes('replay')) {
+    // All positionals after 'replay' are log file paths
+    const replayIndex = positionals.indexOf('replay');
+    const logFiles = positionals.slice(replayIndex + 1);
+
+    return {
+      command: 'replay',
+      options: CLIOptionsSchema.parse({
+        targets: logFiles.length > 0 ? logFiles : undefined,
+        json: values.json,
+        reportOn: values['report-on'] as SeverityThreshold | undefined,
+        minConfidence: values['min-confidence'] as ConfidenceThreshold | undefined,
+        quiet: values.quiet,
+        verbose: verboseCount,
+        debug: values.debug,
+        log: values.log,
+        color: resolveColorOption(values),
+      }),
     };
   }
 

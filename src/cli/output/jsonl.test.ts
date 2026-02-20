@@ -8,6 +8,8 @@ import {
   generateRunId,
   shortRunId,
   readJsonlLog,
+  parseJsonlContent,
+  parseJsonlFiles,
   type JsonlRecord,
 } from './jsonl.js';
 import type { SkillReport } from '../../types/index.js';
@@ -549,5 +551,178 @@ describe('repo-local logging integration', () => {
     expect(content2.run.durationMs).toBe(200);
     expect(content1.run.runId).toBe(runId1);
     expect(content2.run.runId).toBe(runId2);
+  });
+});
+
+describe('parseJsonlContent', () => {
+  it('parses skill records into SkillReports', () => {
+    const content = `{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/home/user/myrepo","runId":"a1b2c3d4"},"skill":"security-review","summary":"Found 1 issue","findings":[{"id":"SEC-001","severity":"high","title":"SQL Injection","description":"Bad query"}],"durationMs":3500}
+{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/home/user/myrepo","runId":"a1b2c3d4"},"type":"summary","totalFindings":1,"bySeverity":{"high":1}}
+`;
+
+    const result = parseJsonlContent(content);
+
+    expect(result.reports.length).toBe(1);
+    expect(result.reports[0]!.skill).toBe('security-review');
+    expect(result.reports[0]!.findings.length).toBe(1);
+    expect(result.reports[0]!.findings[0]!.severity).toBe('high');
+    expect(result.summary).toBeDefined();
+    expect(result.summary!.totalFindings).toBe(1);
+  });
+
+  it('handles multiple skill records', () => {
+    const content = `{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"skill":"skill-1","summary":"Done","findings":[]}
+{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"skill":"skill-2","summary":"Done","findings":[{"id":"1","severity":"low","title":"Minor","description":"Minor issue"}]}
+{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"type":"summary","totalFindings":1,"bySeverity":{"low":1}}
+`;
+
+    const result = parseJsonlContent(content);
+
+    expect(result.reports.length).toBe(2);
+    expect(result.reports[0]!.skill).toBe('skill-1');
+    expect(result.reports[1]!.skill).toBe('skill-2');
+  });
+
+  it('extracts run metadata', () => {
+    const content = `{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test-run-id","traceId":"trace-123"},"type":"summary","totalFindings":0,"bySeverity":{}}
+`;
+
+    const result = parseJsonlContent(content);
+
+    expect(result.runMetadata).toBeDefined();
+    expect(result.runMetadata!.runId).toBe('test-run-id');
+    expect(result.runMetadata!.traceId).toBe('trace-123');
+    expect(result.runMetadata!.durationMs).toBe(5200);
+  });
+
+  it('handles empty content', () => {
+    const result = parseJsonlContent('');
+
+    expect(result.reports.length).toBe(0);
+    expect(result.summary).toBeUndefined();
+  });
+
+  it('skips fix-evaluation records', () => {
+    const content = `{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"skill":"review","summary":"Done","findings":[]}
+{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":8400,"cwd":"/repo","runId":"test"},"type":"fix-evaluation","evaluated":2,"resolved":1,"needsAttention":1,"skipped":0,"failedEvaluations":0}
+{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"type":"summary","totalFindings":0,"bySeverity":{}}
+`;
+
+    const result = parseJsonlContent(content);
+
+    expect(result.reports.length).toBe(1);
+    expect(result.reports[0]!.skill).toBe('review');
+  });
+
+  it('preserves usage stats in reports', () => {
+    const content = `{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"skill":"review","summary":"Done","findings":[],"usage":{"inputTokens":1000,"outputTokens":200,"costUSD":0.01}}
+{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"type":"summary","totalFindings":0,"bySeverity":{}}
+`;
+
+    const result = parseJsonlContent(content);
+
+    expect(result.reports[0]!.usage).toBeDefined();
+    expect(result.reports[0]!.usage!.inputTokens).toBe(1000);
+    expect(result.reports[0]!.usage!.outputTokens).toBe(200);
+    expect(result.reports[0]!.usage!.costUSD).toBe(0.01);
+  });
+
+  it('preserves file records in reports', () => {
+    const content = `{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"skill":"review","summary":"Done","findings":[],"files":[{"filename":"src/a.ts","findings":1,"durationMs":500},{"filename":"src/b.ts","findings":0,"durationMs":300}]}
+{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"type":"summary","totalFindings":1,"bySeverity":{}}
+`;
+
+    const result = parseJsonlContent(content);
+
+    expect(result.reports[0]!.files).toBeDefined();
+    expect(result.reports[0]!.files!.length).toBe(2);
+    expect(result.reports[0]!.files![0]!.filename).toBe('src/a.ts');
+    expect(result.reports[0]!.files![0]!.findingCount).toBe(1);
+  });
+
+  it('preserves skipped files in reports', () => {
+    const content = `{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"skill":"review","summary":"Done","findings":[],"skippedFiles":[{"filename":"dist/bundle.js","reason":"builtin"}]}
+{"run":{"timestamp":"2026-02-08T14:30:45.123Z","durationMs":5200,"cwd":"/repo","runId":"test"},"type":"summary","totalFindings":0,"bySeverity":{}}
+`;
+
+    const result = parseJsonlContent(content);
+
+    expect(result.reports[0]!.skippedFiles).toBeDefined();
+    expect(result.reports[0]!.skippedFiles!.length).toBe(1);
+    expect(result.reports[0]!.skippedFiles![0]!.filename).toBe('dist/bundle.js');
+  });
+});
+
+describe('parseJsonlFiles', () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `warden-parse-test-${Date.now()}`);
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true });
+    }
+  });
+
+  it('parses a single log file', () => {
+    const reports: SkillReport[] = [
+      {
+        skill: 'test-skill',
+        summary: 'Test',
+        findings: [{ id: '1', severity: 'high', title: 'Issue', description: 'Desc' }],
+        durationMs: 1000,
+      },
+    ];
+    const logPath = join(testDir, 'test.jsonl');
+    writeJsonlReport(logPath, reports, 2000);
+
+    const result = parseJsonlFiles([logPath]);
+
+    expect(result.reports.length).toBe(1);
+    expect(result.reports[0]!.skill).toBe('test-skill');
+    expect(result.summary).toBeDefined();
+  });
+
+  it('merges reports from multiple log files', () => {
+    const reports1: SkillReport[] = [
+      { skill: 'skill-1', summary: 'Done', findings: [], durationMs: 500 },
+    ];
+    const reports2: SkillReport[] = [
+      { skill: 'skill-2', summary: 'Done', findings: [], durationMs: 600 },
+    ];
+
+    const path1 = join(testDir, 'log1.jsonl');
+    const path2 = join(testDir, 'log2.jsonl');
+    writeJsonlReport(path1, reports1, 1000);
+    writeJsonlReport(path2, reports2, 1200);
+
+    const result = parseJsonlFiles([path1, path2]);
+
+    expect(result.reports.length).toBe(2);
+    expect(result.reports[0]!.skill).toBe('skill-1');
+    expect(result.reports[1]!.skill).toBe('skill-2');
+  });
+
+  it('uses last summary when merging files', () => {
+    const reports1: SkillReport[] = [
+      { skill: 'skill-1', summary: 'Done', findings: [], durationMs: 500 },
+    ];
+    const reports2: SkillReport[] = [
+      { skill: 'skill-2', summary: 'Done', findings: [{ id: '1', severity: 'low', title: 'X', description: 'Y' }], durationMs: 600 },
+    ];
+
+    const path1 = join(testDir, 'log1.jsonl');
+    const path2 = join(testDir, 'log2.jsonl');
+    writeJsonlReport(path1, reports1, 1000);
+    writeJsonlReport(path2, reports2, 1200);
+
+    const result = parseJsonlFiles([path1, path2]);
+
+    // Last file's summary has 1 finding
+    expect(result.summary).toBeDefined();
+    expect(result.summary!.totalFindings).toBe(1);
   });
 });

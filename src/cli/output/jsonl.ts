@@ -84,6 +84,12 @@ export type JsonlRecord = z.infer<typeof JsonlRecordSchema>;
 /** Severity breakdown in the summary record. */
 const BySeveritySchema = z.record(SeveritySchema, z.number().int().nonnegative());
 
+/**
+ * More permissive schema for parsing bySeverity from log files.
+ * Log files may not include all severity keys, only those with non-zero counts.
+ */
+const BySeverityParseSchema = z.record(z.string(), z.number().int().nonnegative());
+
 /** Aggregate summary across all skills (always the last JSONL line). */
 export const JsonlSummaryRecordSchema = z.object({
   run: JsonlRunMetadataSchema,
@@ -95,6 +101,17 @@ export const JsonlSummaryRecordSchema = z.object({
   auxiliaryUsage: AuxiliaryUsageMapSchema.optional(),
 });
 export type JsonlSummaryRecord = z.infer<typeof JsonlSummaryRecordSchema>;
+
+/** Permissive schema for parsing summary records from log files. */
+const JsonlSummaryRecordParseSchema = z.object({
+  run: JsonlRunMetadataSchema,
+  type: z.literal('summary'),
+  totalFindings: z.number().int().nonnegative(),
+  bySeverity: BySeverityParseSchema,
+  usage: UsageStatsSchema.optional(),
+  totalSkippedFiles: z.number().int().nonnegative().optional(),
+  auxiliaryUsage: AuxiliaryUsageMapSchema.optional(),
+});
 
 /** Per-evaluation detail for fix evaluation records. */
 export const JsonlFixEvalDetailSchema = z.object({
@@ -233,4 +250,101 @@ export function writeJsonlContent(outputPath: string, content: string): void {
  */
 export function readJsonlLog(logPath: string): string {
   return readFileSync(logPath, 'utf-8');
+}
+
+/**
+ * Result of parsing JSONL log files.
+ */
+export interface ParsedJsonlLog {
+  reports: SkillReport[];
+  summary?: JsonlSummaryRecord;
+  runMetadata?: JsonlRunMetadata;
+}
+
+/**
+ * Parse JSONL content and extract skill reports.
+ * Returns SkillReports reconstructed from JsonlRecords.
+ */
+export function parseJsonlContent(content: string): ParsedJsonlLog {
+  const lines = content.trim().split('\n').filter((line) => line.trim());
+  const reports: SkillReport[] = [];
+  let summary: JsonlSummaryRecord | undefined;
+  let runMetadata: JsonlRunMetadata | undefined;
+
+  for (const line of lines) {
+    const parsed = JSON.parse(line);
+
+    // Check if this is a summary record
+    if (parsed.type === 'summary') {
+      const result = JsonlSummaryRecordParseSchema.safeParse(parsed);
+      if (result.success) {
+        // Cast to JsonlSummaryRecord since the parse schema is compatible
+        summary = result.data as JsonlSummaryRecord;
+        runMetadata = result.data.run;
+      }
+      continue;
+    }
+
+    // Check if this is a fix-evaluation record (skip for now)
+    if (parsed.type === 'fix-evaluation') {
+      continue;
+    }
+
+    // Otherwise treat as a skill record
+    const result = JsonlRecordSchema.safeParse(parsed);
+    if (!result.success) {
+      continue;
+    }
+
+    const record = result.data;
+    runMetadata = record.run;
+
+    // Convert JsonlRecord to SkillReport
+    const report: SkillReport = {
+      skill: record.skill,
+      summary: record.summary,
+      findings: record.findings,
+      metadata: record.metadata,
+      durationMs: record.durationMs,
+      usage: record.usage,
+      auxiliaryUsage: record.auxiliaryUsage,
+      files: record.files?.map((f) => ({
+        filename: f.filename,
+        findingCount: f.findings,
+        durationMs: f.durationMs,
+        usage: f.usage,
+      })),
+      skippedFiles: record.skippedFiles,
+      failedHunks: record.failedHunks,
+      failedExtractions: record.failedExtractions,
+    };
+
+    reports.push(report);
+  }
+
+  return { reports, summary, runMetadata };
+}
+
+/**
+ * Parse multiple JSONL log files and merge their reports.
+ * Returns all skill reports from all files.
+ */
+export function parseJsonlFiles(logPaths: string[]): ParsedJsonlLog {
+  const allReports: SkillReport[] = [];
+  let lastSummary: JsonlSummaryRecord | undefined;
+  let lastRunMetadata: JsonlRunMetadata | undefined;
+
+  for (const logPath of logPaths) {
+    const content = readJsonlLog(logPath);
+    const parsed = parseJsonlContent(content);
+    allReports.push(...parsed.reports);
+    if (parsed.summary) {
+      lastSummary = parsed.summary;
+    }
+    if (parsed.runMetadata) {
+      lastRunMetadata = parsed.runMetadata;
+    }
+  }
+
+  return { reports: allReports, summary: lastSummary, runMetadata: lastRunMetadata };
 }
