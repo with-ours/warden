@@ -344,6 +344,49 @@ describe('parseCliArgs', () => {
     expect(result.command).toBe('sync');
     expect(result.options.remote).toBe('getsentry/skills');
   });
+
+  it('parses replay command', () => {
+    const result = parseCliArgs(['replay', 'run.jsonl']);
+    expect(result.command).toBe('replay');
+    expect(result.options.targets).toEqual(['run.jsonl']);
+  });
+
+  it('parses replay command with multiple files', () => {
+    const result = parseCliArgs(['replay', 'a.jsonl', 'b.jsonl']);
+    expect(result.command).toBe('replay');
+    expect(result.options.targets).toEqual(['a.jsonl', 'b.jsonl']);
+  });
+
+  it('parses replay command with --json flag', () => {
+    const result = parseCliArgs(['replay', 'run.jsonl', '--json']);
+    expect(result.command).toBe('replay');
+    expect(result.options.json).toBe(true);
+    expect(result.options.targets).toEqual(['run.jsonl']);
+  });
+
+  it('parses replay command with --report-on option', () => {
+    const result = parseCliArgs(['replay', 'run.jsonl', '--report-on', 'high']);
+    expect(result.command).toBe('replay');
+    expect(result.options.reportOn).toBe('high');
+  });
+
+  it('parses replay command with --min-confidence option', () => {
+    const result = parseCliArgs(['replay', 'run.jsonl', '--min-confidence', 'high']);
+    expect(result.command).toBe('replay');
+    expect(result.options.minConfidence).toBe('high');
+  });
+
+  it('parses replay command with --fix flag', () => {
+    const result = parseCliArgs(['replay', 'run.jsonl', '--fix']);
+    expect(result.command).toBe('replay');
+    expect(result.options.fix).toBe(true);
+  });
+
+  it('parses replay command with no files', () => {
+    const result = parseCliArgs(['replay']);
+    expect(result.command).toBe('replay');
+    expect(result.options.targets).toBeUndefined();
+  });
 });
 
 describe('CLIOptionsSchema', () => {

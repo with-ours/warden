@@ -38,6 +38,7 @@ import { runInit } from './commands/init.js';
 import { runAdd } from './commands/add.js';
 import { runSetupApp } from './commands/setup-app.js';
 import { runSync } from './commands/sync.js';
+import { runReplay } from './commands/replay.js';
 
 /**
  * Global abort controller for graceful shutdown on SIGINT.
@@ -813,6 +814,8 @@ export async function main(): Promise<void> {
           return runSetupApp(setupAppOptions, reporter);
         case 'sync':
           return runSync(options, reporter);
+        case 'replay':
+          return runReplay(options, reporter);
         default:
           return runCommand(options, reporter);
       }
