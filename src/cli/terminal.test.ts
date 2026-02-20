@@ -362,6 +362,76 @@ describe('renderTerminalReport', () => {
     });
   });
 
+  describe('TTY confidence rendering', () => {
+    const ttyMode = { isTTY: true, supportsColor: false, columns: 80 };
+
+    it('renders confidence alongside severity on the title line', () => {
+      const report = createReport({
+        findings: [
+          createFinding({
+            severity: 'high',
+            title: 'Missing null check',
+            confidence: 'high',
+          }),
+        ],
+      });
+
+      const output = renderTerminalReport([report], ttyMode);
+
+      expect(output).toContain('(high confidence)');
+      expect(output).toContain('Missing null check');
+    });
+
+    it('renders low confidence', () => {
+      const report = createReport({
+        findings: [
+          createFinding({
+            severity: 'critical',
+            title: 'Potential XSS',
+            confidence: 'low',
+          }),
+        ],
+      });
+
+      const output = renderTerminalReport([report], ttyMode);
+
+      expect(output).toContain('(low confidence)');
+      expect(output).toContain('Potential XSS');
+    });
+
+    it('renders medium confidence', () => {
+      const report = createReport({
+        findings: [
+          createFinding({
+            severity: 'medium',
+            title: 'Unused import',
+            confidence: 'medium',
+          }),
+        ],
+      });
+
+      const output = renderTerminalReport([report], ttyMode);
+
+      expect(output).toContain('(medium confidence)');
+    });
+
+    it('does not render confidence when not present', () => {
+      const report = createReport({
+        findings: [
+          createFinding({
+            severity: 'high',
+            title: 'Missing null check',
+          }),
+        ],
+      });
+
+      const output = renderTerminalReport([report], ttyMode);
+
+      expect(output).not.toContain('confidence');
+      expect(output).toContain('Missing null check');
+    });
+  });
+
   describe('suppressFixDiffs', () => {
     const ttyMode = { isTTY: true, supportsColor: false, columns: 80 };
 

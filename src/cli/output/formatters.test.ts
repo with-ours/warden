@@ -9,8 +9,10 @@ import {
   padRight,
   formatStatsCompact,
   formatSeverityBadge,
+  formatConfidenceBadge,
+  formatConfidencePlain,
 } from './formatters.js';
-import type { Severity, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
+import type { Severity, Confidence, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
 
 describe('formatDuration', () => {
   it('formats milliseconds under 1s', () => {
@@ -246,5 +248,24 @@ describe('formatStatsCompact', () => {
     };
     // No usage means no cost line, so auxiliary is not shown
     expect(formatStatsCompact(15800, undefined, auxiliaryUsage)).toBe('⏱ 15.8s');
+  });
+});
+
+describe('formatConfidenceBadge', () => {
+  it('formats each confidence level', () => {
+    const levels: Confidence[] = ['high', 'medium', 'low'];
+    for (const level of levels) {
+      const result = formatConfidenceBadge(level);
+      expect(result).toContain(`(${level} confidence)`);
+    }
+  });
+});
+
+describe('formatConfidencePlain', () => {
+  it('formats each confidence level', () => {
+    const levels: Confidence[] = ['high', 'medium', 'low'];
+    for (const level of levels) {
+      expect(formatConfidencePlain(level)).toBe(`confidence: ${level}`);
+    }
   });
 });

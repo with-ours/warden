@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import figures from 'figures';
-import type { Severity, Finding, FileChange, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
+import type { Severity, Confidence, Finding, FileChange, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
 
 /**
  * Capitalize the first letter of a string.
@@ -74,6 +74,20 @@ export function formatSeverityBadge(severity: Severity): string {
  */
 export function formatSeverityPlain(severity: Severity): string {
   return `[${severity}]`;
+}
+
+/**
+ * Format a confidence badge for terminal output (dim text).
+ */
+export function formatConfidenceBadge(confidence: Confidence): string {
+  return chalk.dim(`(${confidence} confidence)`);
+}
+
+/**
+ * Format a confidence for plain text (CI mode).
+ */
+export function formatConfidencePlain(confidence: Confidence): string {
+  return `confidence: ${confidence}`;
 }
 
 /**
