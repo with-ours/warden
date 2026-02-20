@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import figures from 'figures';
-import type { Severity, Finding, FileChange, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
+import type { Severity, Confidence, Finding, FileChange, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
 
 /**
  * Capitalize the first letter of a string.
@@ -77,6 +77,30 @@ export function formatSeverityPlain(severity: Severity): string {
 }
 
 /**
+ * Confidence configuration for display.
+ */
+const CONFIDENCE_CONFIG: Record<Confidence, { color: typeof chalk.green }> = {
+  high: { color: chalk.green },
+  medium: { color: chalk.yellow },
+  low: { color: chalk.red },
+};
+
+/**
+ * Format a confidence label for terminal output (colored text).
+ */
+export function formatConfidenceLabel(confidence: Confidence): string {
+  const config = CONFIDENCE_CONFIG[confidence];
+  return config.color(confidence);
+}
+
+/**
+ * Format a confidence label for plain text (CI mode).
+ */
+export function formatConfidencePlain(confidence: Confidence): string {
+  return confidence;
+}
+
+/**
  * Format a file location string.
  */
 export function formatLocation(path: string, startLine?: number, endLine?: number): string {
@@ -94,12 +118,13 @@ export function formatLocation(path: string, startLine?: number, endLine?: numbe
  */
 export function formatFindingCompact(finding: Finding): string {
   const badge = formatSeverityBadge(finding.severity);
+  const confidence = finding.confidence ? ` ${chalk.dim('confidence:')}${formatConfidenceLabel(finding.confidence)}` : '';
   const id = chalk.dim(`[${finding.id}]`);
   const location = finding.location
     ? chalk.dim(formatLocation(finding.location.path, finding.location.startLine, finding.location.endLine))
     : '';
 
-  return `${badge} ${id} ${finding.title}${location ? ` ${location}` : ''}`;
+  return `${badge}${confidence} ${id} ${finding.title}${location ? ` ${location}` : ''}`;
 }
 
 /**

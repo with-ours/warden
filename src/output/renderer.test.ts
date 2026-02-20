@@ -72,6 +72,51 @@ describe('renderSkillReport', () => {
     expect(result.review!.comments[0]!.body).toContain('<sub>Identified by Warden [code-review] · f1</sub>');
   });
 
+  it('renders confidence in summary comment finding items', () => {
+    const report: SkillReport = {
+      ...baseReport,
+      findings: [
+        {
+          id: 'f1',
+          severity: 'high',
+          confidence: 'medium',
+          title: 'Issue',
+          description: 'Details',
+          location: {
+            path: 'src/file.ts',
+            startLine: 10,
+          },
+        },
+      ],
+    };
+
+    const result = renderSkillReport(report);
+
+    expect(result.summaryComment).toContain('confidence: medium');
+  });
+
+  it('omits confidence in summary comment when not present', () => {
+    const report: SkillReport = {
+      ...baseReport,
+      findings: [
+        {
+          id: 'f1',
+          severity: 'high',
+          title: 'Issue',
+          description: 'Details',
+          location: {
+            path: 'src/file.ts',
+            startLine: 10,
+          },
+        },
+      ],
+    };
+
+    const result = renderSkillReport(report);
+
+    expect(result.summaryComment).not.toContain('confidence');
+  });
+
   it('does not include confidence in attribution footnote', () => {
     const report: SkillReport = {
       ...baseReport,

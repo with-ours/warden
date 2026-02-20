@@ -522,7 +522,8 @@ export function createDefaultCallbacks(
         // Debug: log finding details
         if (verbosity >= Verbosity.Debug && report.findings.length > 0) {
           for (const finding of report.findings) {
-            debugLog(mode, `${formatSeverityPlain(finding.severity)} ${findingLocation(finding)}: ${finding.title}`);
+            const conf = finding.confidence ? ` confidence:${finding.confidence}` : '';
+            debugLog(mode, `${formatSeverityPlain(finding.severity)}${conf} ${findingLocation(finding)}: ${finding.title}`);
             if (finding.suggestedFix) {
               debugLog(mode, `  fix: ${finding.suggestedFix.description}`);
             }
@@ -539,7 +540,8 @@ export function createDefaultCallbacks(
         // (the final report already shows findings with full detail)
         if (verbosity >= Verbosity.Verbose) {
           for (const finding of report.findings) {
-            logPlain(`  ${formatSeverityPlain(finding.severity)} ${findingLocation(finding)}: ${finding.title}`);
+            const conf = finding.confidence ? ` confidence:${finding.confidence}` : '';
+            logPlain(`  ${formatSeverityPlain(finding.severity)}${conf} ${findingLocation(finding)}: ${finding.title}`);
             if (verbosity >= Verbosity.Debug && finding.suggestedFix) {
               logPlain(`    fix: ${finding.suggestedFix.description}`);
             }

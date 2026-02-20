@@ -280,6 +280,24 @@ describe('renderTerminalReport', () => {
       expect(output).not.toContain('confidence:');
     });
 
+    it('renders all confidence levels', () => {
+      for (const confidence of ['high', 'medium', 'low'] as const) {
+        const report = createReport({
+          findings: [
+            createFinding({
+              severity: 'high',
+              title: `Finding with ${confidence} confidence`,
+              confidence,
+              location: { path: 'src/api.ts', startLine: 10 },
+            }),
+          ],
+        });
+
+        const output = renderTerminalReport([report], ciMode);
+        expect(output).toContain(`confidence: ${confidence}`);
+      }
+    });
+
     it('renders suggested fix diff in plain text', () => {
       const report = createReport({
         durationMs: 5000,
@@ -359,6 +377,43 @@ describe('renderTerminalReport', () => {
       const output = renderTerminalReport([report], ciMode);
 
       expect(output).toContain('also at: src/b.ts:20, src/c.ts:30-35');
+    });
+  });
+
+  describe('TTY confidence rendering', () => {
+    const ttyMode = { isTTY: true, supportsColor: false, columns: 80 };
+
+    it('renders confidence alongside severity in TTY mode', () => {
+      const report = createReport({
+        findings: [
+          createFinding({
+            severity: 'critical',
+            confidence: 'high',
+            title: 'SQL injection risk',
+          }),
+        ],
+      });
+
+      const output = renderTerminalReport([report], ttyMode);
+
+      expect(output).toContain('confidence:');
+      expect(output).toContain('high');
+      expect(output).toContain('critical');
+    });
+
+    it('omits confidence in TTY mode when not present', () => {
+      const report = createReport({
+        findings: [
+          createFinding({
+            severity: 'critical',
+            title: 'SQL injection risk',
+          }),
+        ],
+      });
+
+      const output = renderTerminalReport([report], ttyMode);
+
+      expect(output).not.toContain('confidence:');
     });
   });
 

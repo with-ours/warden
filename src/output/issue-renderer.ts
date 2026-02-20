@@ -156,7 +156,8 @@ function renderFindingItem(finding: Finding, ctx: LinkContext): string {
     }
   }
 
-  let line = `- \`${finding.id}\` **${escapeHtml(finding.title)}**${locationStr} · ${finding.severity}`;
+  const confidence = finding.confidence ? ` · confidence: ${finding.confidence}` : '';
+  let line = `- \`${finding.id}\` **${escapeHtml(finding.title)}**${locationStr} · ${finding.severity}${confidence}`;
   line += `\n  ${escapeHtml(finding.description)}`;
 
   if (finding.suggestedFix) {

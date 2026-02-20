@@ -5,6 +5,7 @@ import { filterFindings } from '../types/index.js';
 import {
   formatSeverityBadge,
   formatSeverityPlain,
+  formatConfidenceLabel,
   formatFindingCounts,
   formatFindingCountsPlain,
   formatDuration,
@@ -61,8 +62,9 @@ function formatFindingTTY(finding: Finding, options?: RenderOptions): string[] {
   const badge = formatSeverityBadge(finding.severity);
   const color = SEVERITY_COLORS[finding.severity];
 
-  // Title line with severity dot
-  const titleParts = [badge, color(finding.title)];
+  // Title line with severity dot and confidence
+  const confidenceStr = finding.confidence ? ` ${chalk.dim('confidence:')}${formatConfidenceLabel(finding.confidence)}` : '';
+  const titleParts = [badge + confidenceStr, color(finding.title)];
   lines.push(titleParts.join(' '));
 
   // Location with elapsed time

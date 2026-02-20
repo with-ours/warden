@@ -256,7 +256,8 @@ function renderFindingItem(finding: Finding): string {
   const extra = finding.additionalLocations?.length
     ? ` (+${finding.additionalLocations.length} more ${pluralize(finding.additionalLocations.length, 'location')})`
     : '';
-  return `- \`${finding.id}\` **${escapeHtml(finding.title)}**${location}${extra} · ${finding.severity}: ${escapeHtml(finding.description)}`;
+  const confidence = finding.confidence ? ` · confidence: ${finding.confidence}` : '';
+  return `- \`${finding.id}\` **${escapeHtml(finding.title)}**${location}${extra} · ${finding.severity}${confidence}: ${escapeHtml(finding.description)}`;
 }
 
 /** Render findings as markdown for inclusion in a review body. */

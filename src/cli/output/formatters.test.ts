@@ -9,8 +9,11 @@ import {
   padRight,
   formatStatsCompact,
   formatSeverityBadge,
+  formatConfidenceLabel,
+  formatConfidencePlain,
+  formatFindingCompact,
 } from './formatters.js';
-import type { Severity, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
+import type { Severity, Finding, UsageStats, AuxiliaryUsageMap } from '../../types/index.js';
 
 describe('formatDuration', () => {
   it('formats milliseconds under 1s', () => {
@@ -246,5 +249,58 @@ describe('formatStatsCompact', () => {
     };
     // No usage means no cost line, so auxiliary is not shown
     expect(formatStatsCompact(15800, undefined, auxiliaryUsage)).toBe('⏱ 15.8s');
+  });
+});
+
+describe('formatConfidenceLabel', () => {
+  it('includes confidence text for each level', () => {
+    expect(formatConfidenceLabel('high')).toContain('high');
+    expect(formatConfidenceLabel('medium')).toContain('medium');
+    expect(formatConfidenceLabel('low')).toContain('low');
+  });
+});
+
+describe('formatConfidencePlain', () => {
+  it('returns plain confidence text', () => {
+    expect(formatConfidencePlain('high')).toBe('high');
+    expect(formatConfidencePlain('medium')).toBe('medium');
+    expect(formatConfidencePlain('low')).toBe('low');
+  });
+});
+
+describe('formatFindingCompact', () => {
+  function createFinding(overrides: Partial<Finding> = {}): Finding {
+    return {
+      id: 'test-1',
+      severity: 'medium',
+      title: 'Test Finding',
+      description: 'This is a test finding',
+      ...overrides,
+    };
+  }
+
+  it('includes severity and finding info', () => {
+    const result = formatFindingCompact(createFinding());
+    expect(result).toContain('medium');
+    expect(result).toContain('test-1');
+    expect(result).toContain('Test Finding');
+  });
+
+  it('includes confidence when present', () => {
+    const result = formatFindingCompact(createFinding({ confidence: 'high' }));
+    expect(result).toContain('confidence:');
+    expect(result).toContain('high');
+  });
+
+  it('omits confidence when not present', () => {
+    const result = formatFindingCompact(createFinding());
+    expect(result).not.toContain('confidence:');
+  });
+
+  it('includes location when present', () => {
+    const result = formatFindingCompact(createFinding({
+      location: { path: 'src/foo.ts', startLine: 42 },
+    }));
+    expect(result).toContain('src/foo.ts:42');
   });
 });
