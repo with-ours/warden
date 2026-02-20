@@ -199,6 +199,12 @@ async function outputResultsAndHandleFixes(
     reporter.warning(`Failed to write run log: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // Report session transcript count (debug)
+  const totalSessions = reports.reduce((n, r) => n + (r.sessionPaths?.length ?? 0), 0);
+  if (totalSessions > 0) {
+    reporter.debug(`Saved ${totalSessions} session transcript${totalSessions === 1 ? '' : 's'} to .warden/sessions/`);
+  }
+
   // Write additional copy to --output path if specified
   if (options.output) {
     try {
@@ -819,7 +825,7 @@ export async function main(): Promise<void> {
     },
   );
 
-  // Run log cleanup after all output is complete (covers all exit paths)
+  // Run log and session cleanup after all output is complete (covers all exit paths)
   try {
     let logsRoot: string;
     try {
@@ -829,13 +835,17 @@ export async function main(): Promise<void> {
     }
     const cfgPath = resolve(logsRoot, 'warden.toml');
     const logsConfig = existsSync(cfgPath) ? loadWardenConfig(dirname(cfgPath)).logs : undefined;
-    await cleanupLogs({
-      logsDir: join(logsRoot, '.warden', 'logs'),
-      retentionDays: logsConfig?.retentionDays ?? 30,
-      mode: logsConfig?.cleanup ?? 'ask',
+    const retentionDays = logsConfig?.retentionDays ?? 30;
+    const cleanupMode = logsConfig?.cleanup ?? 'ask';
+    const cleanupOpts = {
+      retentionDays,
+      mode: cleanupMode,
       isTTY: reporter.mode.isTTY,
       reporter,
-    });
+    };
+    await cleanupLogs({ logsDir: join(logsRoot, '.warden', 'logs'), ...cleanupOpts });
+    // Session transcripts follow the same retention policy as logs
+    await cleanupLogs({ logsDir: join(logsRoot, '.warden', 'sessions'), ...cleanupOpts });
   } catch {
     // Config load or cleanup failed — skip silently
   }

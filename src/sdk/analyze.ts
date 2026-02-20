@@ -1,4 +1,4 @@
-import { query, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKResultMessage, type HookInput } from '@anthropic-ai/claude-agent-sdk';
 import type { SkillDefinition } from '../config/schema.js';
 import type { Finding, RetryConfig } from '../types/index.js';
 import { getHunkLineRange, type HunkWithContext } from '../diff/index.js';
@@ -8,6 +8,7 @@ import { DEFAULT_RETRY_CONFIG, calculateRetryDelay, sleep } from './retry.js';
 import { extractUsage, aggregateUsage, emptyUsage, estimateTokens, aggregateAuxiliaryUsage } from './usage.js';
 import { buildHunkSystemPrompt, buildHunkUserPrompt, type PRPromptContext } from './prompt.js';
 import { extractFindingsJson, extractFindingsWithLLM, validateFindings, deduplicateFindings, mergeCrossLocationFindings } from './extract.js';
+import { saveSession } from './session.js';
 import {
   LARGE_PROMPT_THRESHOLD_CHARS,
   DEFAULT_FILE_CONCURRENCY,
@@ -126,6 +127,8 @@ interface QueryExecutionResult {
   authError?: string;
   /** Captured stderr output from Claude Code process */
   stderr?: string;
+  /** Path where the session transcript was saved in .warden/sessions/, if captured */
+  sessionPath?: string;
 }
 
 /**
@@ -163,6 +166,10 @@ async function executeQuery(
       // Capture stderr output for better error diagnostics
       const stderrChunks: string[] = [];
 
+      // Capture session transcript path from SessionEnd hook for .warden/sessions/ storage
+      let capturedTranscriptPath: string | undefined;
+      let capturedSessionId: string | undefined;
+
       const stream = query({
         prompt: userPrompt,
         options: {
@@ -179,6 +186,15 @@ async function executeQuery(
           pathToClaudeCodeExecutable,
           stderr: (data: string) => {
             stderrChunks.push(data);
+          },
+          hooks: {
+            SessionEnd: [{
+              hooks: [async (input: HookInput) => {
+                capturedTranscriptPath = input.transcript_path;
+                capturedSessionId = input.session_id;
+                return { continue: true };
+              }],
+            }],
           },
         },
       });
@@ -337,7 +353,15 @@ async function executeQuery(
       }
 
       const stderr = stderrChunks.join('').trim() || undefined;
-      return { result: resultMessage, authError, stderr };
+
+      // Save session transcript to .warden/sessions/ (best-effort)
+      let sessionPath: string | undefined;
+      const sessionId = capturedSessionId ?? resultMessage?.session_id;
+      if (capturedTranscriptPath && sessionId) {
+        sessionPath = saveSession(capturedTranscriptPath, repoPath, sessionId);
+      }
+
+      return { result: resultMessage, authError, stderr, sessionPath };
     },
   );
 }
@@ -404,7 +428,7 @@ async function analyzeHunk(
         }
 
         try {
-          const { result: resultMessage, authError } = await executeQuery(systemPrompt, userPrompt, repoPath, options, skill.name);
+          const { result: resultMessage, authError, sessionPath } = await executeQuery(systemPrompt, userPrompt, repoPath, options, skill.name);
 
           // Check for authentication errors from auth_status messages
           // auth_status errors are always auth-related - throw immediately
@@ -507,6 +531,7 @@ async function analyzeHunk(
             auxiliaryUsage: parseResult.extractionUsage
               ? [{ agent: 'extraction', usage: parseResult.extractionUsage }]
               : undefined,
+            sessionPath,
           };
         } catch (error) {
           lastError = error;
@@ -635,6 +660,7 @@ export async function analyzeFile(
       const fileFindings: Finding[] = [];
       const fileUsage: UsageStats[] = [];
       const fileAuxiliaryUsage: AuxiliaryUsageEntry[] = [];
+      const fileSessionPaths: string[] = [];
       let failedHunks = 0;
       let failedExtractions = 0;
 
@@ -673,6 +699,9 @@ export async function analyzeFile(
         if (result.auxiliaryUsage) {
           fileAuxiliaryUsage.push(...result.auxiliaryUsage);
         }
+        if (result.sessionPath) {
+          fileSessionPaths.push(result.sessionPath);
+        }
       }
 
       span.setAttribute('finding.count', fileFindings.length);
@@ -686,6 +715,7 @@ export async function analyzeFile(
         failedHunks,
         failedExtractions,
         auxiliaryUsage: fileAuxiliaryUsage.length > 0 ? fileAuxiliaryUsage : undefined,
+        sessionPaths: fileSessionPaths.length > 0 ? fileSessionPaths : undefined,
       };
     },
   );
@@ -869,6 +899,7 @@ export async function runSkill(
   }
 
   // Accumulate results from ordered fileResults
+  const allSessionPaths: string[] = [];
   for (const fr of fileResults) {
     allFindings.push(...fr.result.findings);
     allUsage.push(fr.result.usage);
@@ -876,6 +907,9 @@ export async function runSkill(
     totalFailedExtractions += fr.result.failedExtractions;
     if (fr.result.auxiliaryUsage) {
       allAuxiliaryUsage.push(...fr.result.auxiliaryUsage);
+    }
+    if (fr.result.sessionPaths) {
+      allSessionPaths.push(...fr.result.sessionPaths);
     }
   }
 
@@ -934,6 +968,9 @@ export async function runSkill(
   const auxUsage = aggregateAuxiliaryUsage(allAuxiliaryUsage);
   if (auxUsage) {
     report.auxiliaryUsage = auxUsage;
+  }
+  if (allSessionPaths.length > 0) {
+    report.sessionPaths = allSessionPaths;
   }
   return report;
 }

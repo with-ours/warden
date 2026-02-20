@@ -87,6 +87,8 @@ export { runSkill, SkillRunnerError } from './sdk/runner.js';
 
 export type { SkillRunnerOptions, SkillRunnerCallbacks } from './sdk/runner.js';
 
+export { getSessionsDir, getSessionPath } from './sdk/session.js';
+
 // -----------------------------------------------------------------------------
 // Skills
 // -----------------------------------------------------------------------------

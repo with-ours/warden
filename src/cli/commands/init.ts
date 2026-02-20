@@ -144,20 +144,24 @@ export async function runInit(options: CLIOptions, reporter: Reporter): Promise<
     filesCreated++;
   }
 
-  // Ensure .warden/logs/ is in .gitignore
+  // Ensure .warden/logs/ and .warden/sessions/ are in .gitignore
   const gitignorePath = join(repoRoot, '.gitignore');
+  const wardenIgnoreEntries = ['.warden/logs/', '.warden/sessions/'];
   if (existsSync(gitignorePath)) {
-    const gitignoreContent = readFileSync(gitignorePath, 'utf-8');
-    const hasEntry = gitignoreContent.split('\n').some((line) => line.trim() === '.warden/logs/');
-    if (!hasEntry) {
-      const newline = gitignoreContent.endsWith('\n') ? '' : '\n';
-      writeFileSync(gitignorePath, gitignoreContent + newline + '.warden/logs/\n', 'utf-8');
-      reporter.created('.gitignore entry for .warden/logs/');
-      filesCreated++;
+    let gitignoreContent = readFileSync(gitignorePath, 'utf-8');
+    const lines = gitignoreContent.split('\n').map((l) => l.trim());
+    for (const entry of wardenIgnoreEntries) {
+      if (!lines.includes(entry)) {
+        const newline = gitignoreContent.endsWith('\n') ? '' : '\n';
+        gitignoreContent += newline + entry + '\n';
+        reporter.created(`.gitignore entry for ${entry}`);
+        filesCreated++;
+      }
     }
+    writeFileSync(gitignorePath, gitignoreContent, 'utf-8');
   } else {
-    writeFileSync(gitignorePath, '.warden/logs/\n', 'utf-8');
-    reporter.created('.gitignore with .warden/logs/');
+    writeFileSync(gitignorePath, wardenIgnoreEntries.join('\n') + '\n', 'utf-8');
+    reporter.created('.gitignore with .warden/logs/ and .warden/sessions/');
     filesCreated++;
   }
 

@@ -182,6 +182,8 @@ export const SkillReportSchema = z.object({
   auxiliaryUsage: AuxiliaryUsageMapSchema.optional(),
   /** Per-file breakdown of findings, timing, and usage */
   files: z.array(FileReportSchema).optional(),
+  /** Paths where session transcripts were saved in .warden/sessions/ */
+  sessionPaths: z.array(z.string()).optional(),
 });
 export type SkillReport = z.infer<typeof SkillReportSchema>;
 

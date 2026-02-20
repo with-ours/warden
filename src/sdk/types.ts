@@ -28,6 +28,8 @@ export interface HunkAnalysisResult {
   extractionPreview?: string;
   /** Usage from auxiliary LLM calls (e.g., extraction repair) */
   auxiliaryUsage?: AuxiliaryUsageEntry[];
+  /** Path where the session transcript was saved in .warden/sessions/ */
+  sessionPath?: string;
 }
 
 /**
@@ -145,6 +147,8 @@ export interface FileAnalysisResult {
   failedExtractions: number;
   /** Usage from auxiliary LLM calls across all hunks */
   auxiliaryUsage?: AuxiliaryUsageEntry[];
+  /** Paths where session transcripts were saved in .warden/sessions/ */
+  sessionPaths?: string[];
 }
 
 /**
