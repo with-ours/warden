@@ -41,6 +41,7 @@ import { runAdd } from './commands/add.js';
 import { runSetupApp } from './commands/setup-app.js';
 import { runSync } from './commands/sync.js';
 import { runLogs } from './commands/logs.js';
+import { runGenerateLinters } from './commands/generate-linters.js';
 
 /**
  * Global abort controller for graceful shutdown on SIGINT.
@@ -840,7 +841,7 @@ async function runCommand(options: CLIOptions, reporter: Reporter): Promise<numb
 }
 
 export async function main(): Promise<void> {
-  const { command, options, setupAppOptions, logsOptions } = parseCliArgs();
+  const { command, options, setupAppOptions, logsOptions, generateLintersOptions } = parseCliArgs();
 
   if (command === 'help') {
     showHelp();
@@ -900,6 +901,12 @@ export async function main(): Promise<void> {
             process.exit(1);
           }
           return runLogs(logsOptions, options, reporter);
+        case 'generate-linters':
+          if (!generateLintersOptions) {
+            reporter.error('Missing generate-linters options');
+            process.exit(1);
+          }
+          return runGenerateLinters(generateLintersOptions, reporter);
         default:
           return runCommand(options, reporter);
       }

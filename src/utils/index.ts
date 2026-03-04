@@ -52,8 +52,9 @@ export function escapeHtml(text: string): string {
 
 /**
  * Get the Anthropic API key from environment variables.
- * Checks WARDEN_ANTHROPIC_API_KEY first, then falls back to ANTHROPIC_API_KEY.
+ * Checks WARDEN_ANTHROPIC_API_KEY first, then ANTHROPIC_API_KEY,
+ * then falls back to CLAUDE_CODE_OAUTH_TOKEN (Claude Code subscription auth).
  */
 export function getAnthropicApiKey(): string | undefined {
-  return process.env['WARDEN_ANTHROPIC_API_KEY'] ?? process.env['ANTHROPIC_API_KEY'];
+  return process.env['WARDEN_ANTHROPIC_API_KEY'] ?? process.env['ANTHROPIC_API_KEY'] ?? process.env['CLAUDE_CODE_OAUTH_TOKEN'];
 }

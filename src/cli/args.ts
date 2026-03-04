@@ -64,11 +64,17 @@ export interface LogsOptions {
   files: string[];
 }
 
+export interface GenerateLintersOptions {
+  since?: string;
+  json: boolean;
+}
+
 export interface ParsedArgs {
-  command: 'run' | 'help' | 'init' | 'add' | 'version' | 'setup-app' | 'sync' | 'logs';
+  command: 'run' | 'help' | 'init' | 'add' | 'version' | 'setup-app' | 'sync' | 'logs' | 'generate-linters';
   options: CLIOptions;
   setupAppOptions?: SetupAppOptions;
   logsOptions?: LogsOptions;
+  generateLintersOptions?: GenerateLintersOptions;
 }
 
 export function showVersion(): void {
@@ -88,6 +94,7 @@ Commands:
   logs [list]          List saved run logs (default)
   logs show <files...> Show results from JSONL log files
   logs gc              Remove expired log files
+  generate-linters     Propose lint rules from historical findings
   (default)            Run analysis on targets or using warden.toml triggers
 
 Targets:
@@ -132,6 +139,9 @@ Add Options:
 
 Run Options:
   --offline            Use cached remote skills without network access
+
+Generate-linters Options:
+  --since <date|dur>   Filter logs (e.g., "30d", "2026-01-01")
 
 Setup-app Options:
   --org <name>         Create under organization (default: personal)
@@ -302,6 +312,8 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
       debug: { type: 'boolean', default: false },
       color: { type: 'boolean' },
       'no-color': { type: 'boolean' },
+      // generate-linters options
+      since: { type: 'string' },
       // setup-app options
       org: { type: 'string' },
       port: { type: 'string' },
@@ -328,7 +340,7 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
   }
 
   // Filter out known commands from positionals
-  const commands = ['run', 'help', 'init', 'add', 'version', 'setup-app', 'sync', 'logs'];
+  const commands = ['run', 'help', 'init', 'add', 'version', 'setup-app', 'sync', 'logs', 'generate-linters'];
   const targets = positionals.filter((p) => !commands.includes(p));
 
   // Handle explicit help command
@@ -418,6 +430,25 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
         timeout,
         name: values.name as string | undefined,
         open: !values['no-open'],
+      },
+    };
+  }
+
+  // Handle generate-linters command
+  if (positionals.includes('generate-linters')) {
+    return {
+      command: 'generate-linters',
+      options: CLIOptionsSchema.parse({
+        json: values.json,
+        quiet: values.quiet,
+        verbose: verboseCount,
+        debug: values.debug,
+        log: values.log,
+        color: resolveColorOption(values),
+      }),
+      generateLintersOptions: {
+        since: values.since as string | undefined,
+        json: values.json ?? false,
       },
     };
   }
