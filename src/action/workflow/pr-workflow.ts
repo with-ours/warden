@@ -265,6 +265,7 @@ async function executeAllTriggers(
         context,
         config,
         anthropicApiKey: inputs.anthropicApiKey,
+        githubToken: inputs.githubToken,
         claudePath,
         globalFailOn: inputs.failOn,
         globalReportOn: inputs.reportOn,
