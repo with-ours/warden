@@ -49,7 +49,8 @@ async function parseHunkOutput(
   result: SDKResultMessage,
   filename: string,
   apiKey?: string,
-  auxiliaryMaxRetries?: number
+  auxiliaryMaxRetries?: number,
+  provider?: 'claude' | 'pi'
 ): Promise<ParseHunkOutputResult> {
   if (result.subtype !== 'success') {
     // SDK error - not an extraction failure, just no findings
@@ -64,7 +65,7 @@ async function parseHunkOutput(
   }
 
   // Tier 2: Try LLM fallback for malformed output
-  const fallback = await extractFindingsWithLLM(result.result, apiKey, auxiliaryMaxRetries);
+  const fallback = await extractFindingsWithLLM(result.result, apiKey, auxiliaryMaxRetries, provider);
 
   if (fallback.success) {
     return { findings: validateFindings(fallback.findings, filename), extractionFailed: false, extractionMethod: 'llm', extractionUsage: fallback.usage };
@@ -129,6 +130,45 @@ interface QueryExecutionResult {
   stderr?: string;
 }
 
+const CLAUDE_DEFAULT_ALLOWED_TOOLS = ['Read', 'Grep', 'Glob'] as const;
+const CLAUDE_DEFAULT_DISALLOWED_TOOLS = ['Write', 'Edit', 'Bash', 'WebFetch', 'WebSearch', 'Task', 'TodoWrite'] as const;
+const PI_DEFAULT_ALLOWED_TOOLS = ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'] as const;
+const PI_DEFAULT_DISALLOWED_TOOLS = ['WebFetch', 'WebSearch', 'Task', 'TodoWrite'] as const;
+
+export function resolveToolPolicy(
+  provider: 'claude' | 'pi',
+  skill: SkillDefinition
+): { allowedTools: string[]; disallowedTools: string[] } {
+  const baseAllowed = provider === 'pi'
+    ? [...PI_DEFAULT_ALLOWED_TOOLS]
+    : [...CLAUDE_DEFAULT_ALLOWED_TOOLS];
+  const baseDisallowed = provider === 'pi'
+    ? [...PI_DEFAULT_DISALLOWED_TOOLS]
+    : [...CLAUDE_DEFAULT_DISALLOWED_TOOLS];
+
+  const allowedFromSkill = skill.tools?.allowed;
+  const deniedFromSkill = skill.tools?.denied;
+
+  let allowedTools = allowedFromSkill && allowedFromSkill.length > 0
+    ? [...allowedFromSkill]
+    : baseAllowed;
+
+  const disallowed = new Set<string>(baseDisallowed);
+  if (deniedFromSkill) {
+    for (const denied of deniedFromSkill) {
+      disallowed.add(denied);
+    }
+  }
+  for (const denied of disallowed) {
+    allowedTools = allowedTools.filter((t) => t !== denied);
+  }
+
+  return {
+    allowedTools,
+    disallowedTools: [...disallowed],
+  };
+}
+
 /**
  * Execute a single SDK query attempt.
  * Captures stderr for better error diagnostics when Claude Code fails.
@@ -138,9 +178,13 @@ async function executeQuery(
   userPrompt: string,
   repoPath: string,
   options: SkillRunnerOptions,
-  skillName: string
+  skill: SkillDefinition
 ): Promise<QueryExecutionResult> {
-  const { maxTurns = 50, model, abortController, pathToClaudeCodeExecutable } = options;
+  const { maxTurns = 50, model, abortController, pathToClaudeCodeExecutable, provider = 'claude' } = options;
+  const { allowedTools, disallowedTools } = resolveToolPolicy(provider, skill);
+  const skillName = skill.name;
+
+  const providerName = provider === 'claude' ? 'anthropic' : provider;
   const modelId = model ?? 'unknown';
 
   return Sentry.startSpan(
@@ -149,7 +193,7 @@ async function executeQuery(
       name: `invoke_agent ${skillName}`,
       attributes: {
         'gen_ai.operation.name': 'invoke_agent',
-        'gen_ai.provider.name': 'anthropic',
+        'gen_ai.provider.name': providerName,
         'gen_ai.agent.name': skillName,
         'gen_ai.request.model': modelId,
         'warden.request.max_turns': maxTurns,
@@ -170,10 +214,9 @@ async function executeQuery(
           maxTurns,
           cwd: repoPath,
           systemPrompt,
-          // Only allow read-only tools - context is already provided in the prompt
-          allowedTools: ['Read', 'Grep', 'Glob'],
-          // Explicitly block modification/side-effect tools as defense-in-depth
-          disallowedTools: ['Write', 'Edit', 'Bash', 'WebFetch', 'WebSearch', 'Task', 'TodoWrite'],
+          allowedTools,
+          disallowedTools,
+          ...(provider === 'pi' ? { agent: 'pi' } : {}),
           permissionMode: 'bypassPermissions',
           // Prevent SDK from writing session .jsonl files and polluting Claude Code's session index
           persistSession: false,
@@ -215,7 +258,7 @@ async function executeQuery(
               name: `chat ${skillName} turn ${turnCount}`,
               attributes: {
                 'gen_ai.operation.name': 'chat',
-                'gen_ai.provider.name': 'anthropic',
+                'gen_ai.provider.name': providerName,
                 'gen_ai.agent.name': skillName,
                 'gen_ai.response.model': turn.model,
                 'gen_ai.usage.input_tokens': totalInput,
@@ -407,7 +450,7 @@ async function analyzeHunk(
         }
 
         try {
-          const { result: resultMessage, authError } = await executeQuery(systemPrompt, userPrompt, repoPath, options, skill.name);
+          const { result: resultMessage, authError } = await executeQuery(systemPrompt, userPrompt, repoPath, options, skill);
 
           // Check for authentication errors from auth_status messages
           // auth_status errors are always auth-related - throw immediately
@@ -459,7 +502,13 @@ async function analyzeHunk(
             };
           }
 
-          const parseResult = await parseHunkOutput(resultMessage, hunkCtx.filename, apiKey, options.auxiliaryMaxRetries);
+          const parseResult = await parseHunkOutput(
+            resultMessage,
+            hunkCtx.filename,
+            apiKey,
+            options.auxiliaryMaxRetries,
+            options.provider
+          );
 
           // Filter findings outside hunk line range (defense-in-depth)
           const hunkRange = getHunkLineRange(hunkCtx.hunk);
@@ -524,8 +573,8 @@ async function analyzeHunk(
           if (isSubprocessError(error)) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             throw new WardenAuthenticationError(
-              `Claude Code subprocess failed (${errorMessage}).\n` +
-              `This usually means the claude CLI cannot run in this environment.`,
+              `Provider subprocess failed (${errorMessage}).\n` +
+              `This usually means the configured provider CLI cannot run in this environment.`,
               { cause: error }
             );
           }
@@ -755,6 +804,7 @@ export async function runSkill(
       usage: emptyUsage(),
       durationMs: Date.now() - startTime,
       model: options.model,
+      provider: options.provider,
     };
     if (skippedFiles.length > 0) {
       report.skippedFiles = skippedFiles;
@@ -897,7 +947,7 @@ export async function runSkill(
     throw new SkillRunnerError(
       `All ${totalHunks} chunk${totalHunks === 1 ? '' : 's'} failed to analyze. ` +
       `This usually indicates an authentication problem. ` +
-      `Verify WARDEN_ANTHROPIC_API_KEY is set correctly, or run 'claude login' if using Claude Code subscription.`
+      `Verify provider credentials are set correctly (WARDEN_ANTHROPIC_API_KEY or WARDEN_PI_API_KEY).`
     );
   }
 
@@ -910,6 +960,7 @@ export async function runSkill(
     apiKey: options.apiKey,
     repoPath: context.repoPath,
     maxRetries: options.auxiliaryMaxRetries,
+    provider: options.provider,
   });
   let mergedFindings = mergeResult.findings;
   if (mergeResult.usage) {
@@ -919,6 +970,7 @@ export async function runSkill(
     repoPath: context.repoPath,
     apiKey: options.apiKey,
     maxRetries: options.auxiliaryMaxRetries,
+    provider: options.provider,
   });
   mergedFindings = sanitized.findings;
   if (sanitized.usage) {
@@ -953,6 +1005,7 @@ export async function runSkill(
     usage: totalUsage,
     durationMs: Date.now() - startTime,
     model: options.model,
+    provider: options.provider,
     files: fileResults.map((fr) => ({
       filename: fr.filename,
       findingCount: fr.result.findings.length,

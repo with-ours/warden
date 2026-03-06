@@ -7,14 +7,19 @@
 import { SeverityThresholdSchema } from '../types/index.js';
 import type { SeverityThreshold } from '../types/index.js';
 import { DEFAULT_CONCURRENCY } from '../utils/index.js';
+import type { Provider } from '../config/schema.js';
 
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
 
 export interface ActionInputs {
+  /** Optional provider override (defaults to config/env) */
+  provider?: Provider;
   /** API key for Anthropic API (empty if using OAuth) */
   anthropicApiKey: string;
+  /** API key for Pi provider */
+  piApiKey?: string;
   /** OAuth token for Claude Code (empty if using API key) */
   oauthToken: string;
   githubToken: string;
@@ -58,31 +63,32 @@ function parseBooleanInput(value: string): boolean | undefined {
   return undefined;
 }
 
+function parseProviderInput(value: string): Provider | undefined {
+  return value === 'claude' || value === 'pi' ? value : undefined;
+}
+
 /**
  * Parse action inputs from the GitHub Actions environment.
  * Throws if required inputs are missing.
  */
 export function parseActionInputs(): ActionInputs {
-  // Check for auth token: supports both API keys and OAuth tokens
+  const providerInput = getInput('provider') || process.env['WARDEN_PROVIDER'] || '';
+  const provider = parseProviderInput(providerInput);
+
+  // Claude auth token: supports both API keys and OAuth tokens
   // Priority: input > WARDEN_ANTHROPIC_API_KEY > ANTHROPIC_API_KEY > CLAUDE_CODE_OAUTH_TOKEN
-  const authToken =
+  const claudeAuthToken =
     getInput('anthropic-api-key') ||
     process.env['WARDEN_ANTHROPIC_API_KEY'] ||
     process.env['ANTHROPIC_API_KEY'] ||
     process.env['CLAUDE_CODE_OAUTH_TOKEN'] ||
     '';
 
-  if (!authToken) {
-    throw new Error(
-      'Authentication not found. Provide an API key via anthropic-api-key input, ' +
-        'ANTHROPIC_API_KEY env var, or OAuth token via CLAUDE_CODE_OAUTH_TOKEN env var.'
-    );
-  }
-
   // Detect token type: OAuth tokens start with 'sk-ant-oat', API keys are other 'sk-ant-' prefixes
-  const isOAuthToken = authToken.startsWith('sk-ant-oat');
-  const anthropicApiKey = isOAuthToken ? '' : authToken;
-  const oauthToken = isOAuthToken ? authToken : '';
+  const isOAuthToken = claudeAuthToken.startsWith('sk-ant-oat');
+  const anthropicApiKey = isOAuthToken ? '' : claudeAuthToken;
+  const oauthToken = isOAuthToken ? claudeAuthToken : '';
+  const piApiKey = process.env['WARDEN_PI_API_KEY'] || '';
 
   const failOnInput = getInput('fail-on');
   const failOn = SeverityThresholdSchema.safeParse(failOnInput).success
@@ -101,7 +107,9 @@ export function parseActionInputs(): ActionInputs {
   const failCheck = parseBooleanInput(getInput('fail-check'));
 
   return {
+    provider,
     anthropicApiKey,
+    piApiKey,
     oauthToken,
     githubToken: getInput('github-token') || process.env['GITHUB_TOKEN'] || '',
     configPath: getInput('config-path') || 'warden.toml',
@@ -129,10 +137,18 @@ export function validateInputs(inputs: ActionInputs): void {
  * Sets appropriate env vars based on token type (API key vs OAuth).
  */
 export function setupAuthEnv(inputs: ActionInputs): void {
+  if (inputs.provider) {
+    process.env['WARDEN_PROVIDER'] = inputs.provider;
+  }
+  if (inputs.piApiKey) {
+    process.env['WARDEN_PI_API_KEY'] = inputs.piApiKey;
+  }
   if (inputs.oauthToken) {
     process.env['CLAUDE_CODE_OAUTH_TOKEN'] = inputs.oauthToken;
   } else {
-    process.env['WARDEN_ANTHROPIC_API_KEY'] = inputs.anthropicApiKey;
-    process.env['ANTHROPIC_API_KEY'] = inputs.anthropicApiKey;
+    if (inputs.anthropicApiKey) {
+      process.env['WARDEN_ANTHROPIC_API_KEY'] = inputs.anthropicApiKey;
+      process.env['ANTHROPIC_API_KEY'] = inputs.anthropicApiKey;
+    }
   }
 }

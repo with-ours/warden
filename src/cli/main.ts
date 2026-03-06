@@ -8,7 +8,7 @@ import { resolveSkillAsync } from '../skills/loader.js';
 import { matchTrigger, filterContextByPaths, shouldFail, countFindingsAtOrAbove } from '../triggers/matcher.js';
 import type { SkillReport, ConfidenceThreshold } from '../types/index.js';
 import { filterFindings } from '../types/index.js';
-import { DEFAULT_CONCURRENCY, getAnthropicApiKey } from '../utils/index.js';
+import { DEFAULT_CONCURRENCY, getProviderApiKey } from '../utils/index.js';
 import { parseCliArgs, showHelp, showVersion, classifyTargets, type CLIOptions } from './args.js';
 import { buildLocalEventContext, buildFileEventContext } from './context.js';
 import { getRepoRoot, getHeadSha, refExists, hasUncommittedChanges } from './git.js';
@@ -94,6 +94,22 @@ function createReporter(options: CLIOptions): Reporter {
 function resolveConfigPath(options: CLIOptions, repoPath: string): string {
   const cwd = process.cwd();
   return options.config ? resolve(cwd, options.config) : resolve(repoPath, 'warden.toml');
+}
+
+function resolveProvider(configProvider?: string, cliProvider?: string): 'claude' | 'pi' {
+  if (configProvider === 'claude' || configProvider === 'pi') return configProvider;
+  if (cliProvider === 'claude' || cliProvider === 'pi') return cliProvider;
+  const envProvider = process.env['WARDEN_PROVIDER'];
+  if (envProvider === 'claude' || envProvider === 'pi') return envProvider;
+  return 'claude';
+}
+
+function logMissingProviderApiKey(reporter: Reporter, provider: 'claude' | 'pi'): void {
+  reporter.debug(
+    provider === 'claude'
+      ? 'No API key found. Using Claude Code subscription auth.'
+      : 'No API key found for Pi provider. Falling back to Claude auth sources.'
+  );
 }
 
 /**
@@ -306,33 +322,12 @@ async function runSkills(
   const cwd = process.cwd();
   const startTime = Date.now();
 
-  // Get API key (optional - SDK can use Claude Code subscription auth)
-  const apiKey = getAnthropicApiKey();
-  if (!apiKey) {
-    reporter.debug('No API key found. Using Claude Code subscription auth.');
-  }
-
   // Try to find repo root for config loading
   let repoPath: string | undefined;
   try {
     repoPath = getRepoRoot(cwd);
   } catch {
     // Not in a git repo - that's fine for file mode
-  }
-
-  // Pre-flight: verify auth will work before starting analysis
-  try {
-    verifyAuth({ apiKey });
-  } catch (error: unknown) {
-    reporter.error((error as WardenAuthenticationError).message);
-    const effectiveRepo = repoPath ?? cwd;
-    if (options.json) {
-      const { content } = writeEmptyRunLog(effectiveRepo, { traceId: getTraceId(), outputPath: options.output });
-      process.stdout.write(content);
-    } else {
-      writeEmptyRunLog(effectiveRepo, { traceId: getTraceId(), outputPath: options.output });
-    }
-    return 1;
   }
 
   // Resolve config path
@@ -347,13 +342,33 @@ async function runSkills(
   const config = configPath && existsSync(configPath)
     ? loadWardenConfig(dirname(configPath))
     : null;
+  const provider = resolveProvider(config?.defaults?.provider, options.provider);
+  const apiKey = getProviderApiKey(provider);
+  if (!apiKey) {
+    logMissingProviderApiKey(reporter, provider);
+  }
+
+  // Pre-flight: verify auth will work before starting analysis
+  try {
+    verifyAuth({ apiKey, provider });
+  } catch (error: unknown) {
+    reporter.error((error as WardenAuthenticationError).message);
+    const effectiveRepo = repoPath ?? cwd;
+    if (options.json) {
+      const { content } = writeEmptyRunLog(effectiveRepo, { traceId: getTraceId(), outputPath: options.output });
+      process.stdout.write(content);
+    } else {
+      writeEmptyRunLog(effectiveRepo, { traceId: getTraceId(), outputPath: options.output });
+    }
+    return 1;
+  }
 
   // Determine which triggers/skills to run
   let skillsToRun: SkillToRun[];
   if (options.skill) {
     // Explicit skill specified via CLI — check config for remote/filters if available
     const match = config
-      ? resolveSkillConfigs(config, options.model).find((t) => t.skill === options.skill)
+      ? resolveSkillConfigs(config, options.model, options.provider).find((t) => t.skill === options.skill)
       : undefined;
     // Fall back to global defaults when the skill isn't in the config
     const defaultIgnorePaths = config?.defaults?.ignorePaths;
@@ -363,7 +378,7 @@ async function runSkills(
     skillsToRun = [{ skill: options.skill, remote: match?.remote, filters: match?.filters ?? fallbackFilters }];
   } else if (config) {
     // Get skills from matched triggers, preserving remote property and filters
-    const resolvedTriggers = resolveSkillConfigs(config, options.model);
+    const resolvedTriggers = resolveSkillConfigs(config, options.model, options.provider);
     const matchedTriggers = resolvedTriggers.filter((t) => matchTrigger(t, context, 'local'));
     // Dedupe by skill name but keep first occurrence (with its remote property and filters)
     const seen = new Set<string>();
@@ -405,6 +420,7 @@ async function runSkills(
   const runnerOptions: SkillRunnerOptions = {
     apiKey,
     model: sdkModel,
+    provider,
     abortController,
     maxTurns: config?.defaults?.maxTurns,
     batchDelayMs: config?.defaults?.batchDelayMs,
@@ -632,7 +648,7 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
   emitRunMetric();
 
   // Resolve skills into triggers and match
-  const resolvedTriggers = resolveSkillConfigs(config, options.model);
+  const resolvedTriggers = resolveSkillConfigs(config, options.model, options.provider);
   const matchedTriggers = resolvedTriggers.filter((t) => matchTrigger(t, context, 'local'));
 
   // Filter by skill if specified
@@ -673,15 +689,15 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
     triggersToRun.map((t) => ({ name: t.name, skill: t.skill }))
   );
 
-  // Get API key (optional - SDK can use Claude Code subscription auth)
-  const apiKey = getAnthropicApiKey();
+  const provider = resolveProvider(config.defaults?.provider, options.provider);
+  const apiKey = getProviderApiKey(provider);
   if (!apiKey) {
-    reporter.debug('No API key found. Using Claude Code subscription auth.');
+    logMissingProviderApiKey(reporter, provider);
   }
 
   // Pre-flight: verify auth will work before starting analysis
   try {
-    verifyAuth({ apiKey });
+    verifyAuth({ apiKey, provider });
   } catch (error: unknown) {
     reporter.error((error as WardenAuthenticationError).message);
     if (options.json) {
@@ -708,6 +724,7 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
     runnerOptions: {
       apiKey,
       model: trigger.model,
+      provider: trigger.provider,
       abortController,
       maxTurns: trigger.maxTurns,
       maxContextFiles: config.defaults?.chunking?.maxContextFiles,

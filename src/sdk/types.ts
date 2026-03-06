@@ -1,6 +1,7 @@
 import type { Finding, UsageStats, SkippedFile, RetryConfig } from '../types/index.js';
 import type { HunkWithContext } from '../diff/index.js';
 import type { ChunkingConfig } from '../config/schema.js';
+import type { Provider } from '../config/schema.js';
 
 /** A single auxiliary usage entry, keyed by agent name (e.g. 'extraction', 'dedup'). */
 export interface AuxiliaryUsageEntry {
@@ -56,6 +57,8 @@ export interface SkillRunnerCallbacks {
 
 export interface SkillRunnerOptions {
   apiKey?: string;
+  /** Provider to use for analysis (claude|pi). Default: claude */
+  provider?: Provider;
   maxTurns?: number;
   /** Lines of context to include around each hunk */
   contextLines?: number;

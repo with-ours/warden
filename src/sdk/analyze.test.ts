@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { filterOutOfRangeFindings } from './analyze.js';
+import { filterOutOfRangeFindings, resolveToolPolicy } from './analyze.js';
 import type { Finding } from '../types/index.js';
+import type { SkillDefinition } from '../config/schema.js';
 
 function makeFinding(startLine: number, id = `f-${startLine}`): Finding {
   return {
@@ -76,5 +77,41 @@ describe('filterOutOfRangeFindings', () => {
     const { filtered, dropped } = filterOutOfRangeFindings([], hunkRange);
     expect(filtered).toEqual([]);
     expect(dropped).toEqual([]);
+  });
+});
+
+describe('resolveToolPolicy', () => {
+  const baseSkill: SkillDefinition = {
+    name: 'test-skill',
+    description: 'test',
+    prompt: 'test prompt',
+  };
+
+  it('uses read-only defaults for claude provider', () => {
+    const policy = resolveToolPolicy('claude', baseSkill);
+    expect(policy.allowedTools).toEqual(['Read', 'Grep', 'Glob']);
+    expect(policy.disallowedTools).toContain('Write');
+    expect(policy.disallowedTools).toContain('Bash');
+  });
+
+  it('enables shell/read/write defaults for pi provider', () => {
+    const policy = resolveToolPolicy('pi', baseSkill);
+    expect(policy.allowedTools).toContain('Read');
+    expect(policy.allowedTools).toContain('Write');
+    expect(policy.allowedTools).toContain('Bash');
+    expect(policy.disallowedTools).not.toContain('Write');
+    expect(policy.disallowedTools).not.toContain('Bash');
+  });
+
+  it('applies skill allowed-tools override and denied-tools filtering', () => {
+    const policy = resolveToolPolicy('pi', {
+      ...baseSkill,
+      tools: {
+        allowed: ['Read', 'Write', 'Bash'],
+        denied: ['Write'],
+      },
+    });
+    expect(policy.allowedTools).toEqual(['Read', 'Bash']);
+    expect(policy.disallowedTools).toContain('Write');
   });
 });

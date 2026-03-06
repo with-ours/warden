@@ -5,6 +5,7 @@ import type { UsageStats } from '../types/index.js';
 import { Sentry } from '../sentry.js';
 import { apiUsageToStats } from './pricing.js';
 import { aggregateUsage, emptyUsage } from './usage.js';
+import type { Provider } from '../config/schema.js';
 
 export const HAIKU_MODEL = 'claude-haiku-4-5';
 export const DEFAULT_AUXILIARY_MAX_RETRIES = 5;
@@ -123,6 +124,7 @@ export interface CallHaikuOptions<T> {
   apiKey: string;
   prompt: string;
   schema: z.ZodType<T>;
+  provider?: Provider;
   maxTokens?: number;
   timeout?: number;
   maxRetries?: number;
@@ -145,6 +147,8 @@ function inferPrefill(schema: z.ZodType): string | undefined {
  */
 export async function callHaiku<T>(options: CallHaikuOptions<T>): Promise<HaikuResult<T>> {
   const { apiKey, prompt, schema, maxTokens = DEFAULT_MAX_TOKENS, timeout = DEFAULT_TIMEOUT_MS, maxRetries = DEFAULT_AUXILIARY_MAX_RETRIES } = options;
+  const provider = options.provider ?? 'claude';
+  const providerName = provider === 'claude' ? 'anthropic' : provider;
 
   return Sentry.startSpan(
     {
@@ -152,7 +156,7 @@ export async function callHaiku<T>(options: CallHaikuOptions<T>): Promise<HaikuR
       name: `chat ${HAIKU_MODEL}`,
       attributes: {
         'gen_ai.operation.name': 'chat',
-        'gen_ai.provider.name': 'anthropic',
+        'gen_ai.provider.name': providerName,
         'gen_ai.request.model': HAIKU_MODEL,
         'gen_ai.request.max_tokens': maxTokens,
       },
@@ -218,6 +222,7 @@ export interface CallHaikuWithToolsOptions<T> {
   apiKey: string;
   prompt: string;
   schema: z.ZodType<T>;
+  provider?: Provider;
   tools: Anthropic.Tool[];
   executeTool: (name: string, input: Record<string, unknown>) => Promise<string>;
   maxTokens?: number;
@@ -236,6 +241,7 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
     apiKey,
     prompt,
     schema,
+    provider = 'claude',
     tools,
     executeTool,
     maxTokens = DEFAULT_MAX_TOKENS,
@@ -243,6 +249,7 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
     timeout = DEFAULT_TIMEOUT_MS,
     maxRetries = DEFAULT_AUXILIARY_MAX_RETRIES,
   } = options;
+  const providerName = provider === 'claude' ? 'anthropic' : provider;
 
   return Sentry.startSpan(
     {
@@ -250,7 +257,7 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
       name: `chat ${HAIKU_MODEL}`,
       attributes: {
         'gen_ai.operation.name': 'chat',
-        'gen_ai.provider.name': 'anthropic',
+        'gen_ai.provider.name': providerName,
         'gen_ai.request.model': HAIKU_MODEL,
         'gen_ai.request.max_tokens': maxTokens,
       },

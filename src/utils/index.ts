@@ -57,3 +57,14 @@ export function escapeHtml(text: string): string {
 export function getAnthropicApiKey(): string | undefined {
   return process.env['WARDEN_ANTHROPIC_API_KEY'] ?? process.env['ANTHROPIC_API_KEY'];
 }
+
+/**
+ * Get provider API key from environment variables.
+ * For Claude, keeps backward-compatible ANTHROPIC_API_KEY fallback.
+ */
+export function getProviderApiKey(provider: 'claude' | 'pi'): string | undefined {
+  if (provider === 'pi') {
+    return process.env['WARDEN_PI_API_KEY'] ?? getAnthropicApiKey();
+  }
+  return getAnthropicApiKey();
+}

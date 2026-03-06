@@ -48,6 +48,8 @@ import {
   setWorkflowOutputs,
   getAuthenticatedBotLogin,
   writeFindingsOutput,
+  resolveActionProvider,
+  getActionProviderApiKey,
 } from './base.js';
 
 // -----------------------------------------------------------------------------
@@ -148,7 +150,7 @@ async function initializeWorkflow(
   }
 
   // Resolve skills into triggers and match
-  const resolvedTriggers = resolveSkillConfigs(config);
+  const resolvedTriggers = resolveSkillConfigs(config, undefined, inputs.provider);
   const matchedTriggers = resolvedTriggers.filter((t) => matchTrigger(t, context, 'github'));
 
   if (matchedTriggers.length > 0) {
@@ -250,7 +252,9 @@ async function executeAllTriggers(
   inputs: ActionInputs
 ): Promise<TriggerResult[]> {
   const concurrency = config.runner?.concurrency ?? inputs.parallel;
-  const claudePath = await findClaudeCodeExecutable();
+  const provider = resolveActionProvider(inputs, config);
+  const apiKey = getActionProviderApiKey(provider, inputs);
+  const claudePath = provider === 'claude' ? await findClaudeCodeExecutable() : undefined;
 
   // Global semaphore gates file-level work across all triggers.
   // All triggers launch immediately; the semaphore limits concurrent file analyses.
@@ -264,7 +268,8 @@ async function executeAllTriggers(
         octokit,
         context,
         config,
-        anthropicApiKey: inputs.anthropicApiKey,
+        apiKey,
+        provider,
         claudePath,
         globalFailOn: inputs.failOn,
         globalReportOn: inputs.reportOn,

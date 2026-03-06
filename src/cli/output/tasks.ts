@@ -16,6 +16,7 @@ import {
   deduplicateFindings,
   mergeCrossLocationFindings,
   generateSummary,
+  verifyAuth,
   type AuxiliaryUsageEntry,
   type SkillRunnerOptions,
   type FileAnalysisCallbacks,
@@ -188,6 +189,11 @@ export async function runSkillTask(
       const startTime = Date.now();
 
       try {
+        verifyAuth({
+          apiKey: runnerOptions.apiKey,
+          provider: runnerOptions.provider ?? 'claude',
+        });
+
         // Resolve the skill
         const skill = await resolveSkill();
 
@@ -406,6 +412,7 @@ export async function runSkillTask(
           apiKey: runnerOptions.apiKey,
           repoPath: context.repoPath,
           maxRetries: runnerOptions.auxiliaryMaxRetries,
+          provider: runnerOptions.provider,
         });
         let mergedFindings = mergeResult.findings;
         if (mergeResult.usage) {
@@ -415,6 +422,7 @@ export async function runSkillTask(
           repoPath: context.repoPath,
           apiKey: runnerOptions.apiKey,
           maxRetries: runnerOptions.auxiliaryMaxRetries,
+          provider: runnerOptions.provider,
         });
         mergedFindings = sanitized.findings;
         if (sanitized.usage) {
@@ -443,6 +451,7 @@ export async function runSkillTask(
           usage: aggregateUsage(allUsage),
           durationMs: duration,
           model: runnerOptions?.model,
+          provider: runnerOptions?.provider,
           files: preparedFiles.map((file, i) => {
             const r = allResults[i];
             return {

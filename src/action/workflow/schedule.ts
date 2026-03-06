@@ -26,6 +26,8 @@ import {
   handleTriggerErrors,
   getDefaultBranchFromAPI,
   writeFindingsOutput,
+  resolveActionProvider,
+  getActionProviderApiKey,
 } from './base.js';
 
 // -----------------------------------------------------------------------------
@@ -67,7 +69,9 @@ export async function runScheduleWorkflow(
   }
 
   // Find schedule triggers
-  const scheduleTriggers = resolveSkillConfigs(config).filter((t) => t.type === 'schedule');
+  const scheduleTriggers = resolveSkillConfigs(config, undefined, inputs.provider).filter((t) => t.type === 'schedule');
+  const provider = resolveActionProvider(inputs, config);
+  const apiKey = getActionProviderApiKey(provider, inputs);
   if (scheduleTriggers.length === 0) {
     console.log('No schedule triggers configured');
     setOutput('findings-count', 0);
@@ -147,9 +151,10 @@ export async function runScheduleWorkflow(
       const skill = await resolveSkillAsync(resolved.skill, repoPath, {
         remote: resolved.remote,
       });
-      const claudePath = await findClaudeCodeExecutable();
+      const claudePath = provider === 'claude' ? await findClaudeCodeExecutable() : undefined;
       const report = await runSkill(skill, context, {
-        apiKey: inputs.anthropicApiKey,
+        apiKey,
+        provider,
         model: resolved.model,
         maxTurns: resolved.maxTurns,
         batchDelayMs: config.defaults?.batchDelayMs,

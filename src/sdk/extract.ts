@@ -8,6 +8,7 @@ import type { Finding, Location, UsageStats } from '../types/index.js';
 import { Sentry } from '../sentry.js';
 import { callHaiku, DEFAULT_AUXILIARY_MAX_RETRIES, HAIKU_MODEL, setGenAiResponseAttrs } from './haiku.js';
 import { apiUsageToStats } from './pricing.js';
+import type { Provider } from '../config/schema.js';
 
 /** Pattern to match the start of findings JSON (allows whitespace after brace) */
 export const FINDINGS_JSON_START = /\{\s*"findings"/;
@@ -174,8 +175,10 @@ export function truncateForLLMFallback(rawText: string, maxChars: number): strin
 export async function extractFindingsWithLLM(
   rawText: string,
   apiKey?: string,
-  maxRetries?: number
+  maxRetries?: number,
+  provider: Provider = 'claude'
 ): Promise<ExtractFindingsResult> {
+  const providerName = provider === 'claude' ? 'anthropic' : provider;
   if (!apiKey) {
     return {
       success: false,
@@ -202,7 +205,7 @@ export async function extractFindingsWithLLM(
       name: `chat ${HAIKU_MODEL}`,
       attributes: {
         'gen_ai.operation.name': 'chat',
-        'gen_ai.provider.name': 'anthropic',
+        'gen_ai.provider.name': providerName,
         'gen_ai.request.model': HAIKU_MODEL,
         'gen_ai.request.max_tokens': LLM_FALLBACK_MAX_TOKENS,
       },
@@ -476,7 +479,7 @@ function readSnippet(repoPath: string, filePath: string, startLine: number, cont
  */
 export async function mergeCrossLocationFindings(
   findings: Finding[],
-  options?: { apiKey?: string; repoPath?: string; maxRetries?: number }
+  options?: { apiKey?: string; repoPath?: string; maxRetries?: number; provider?: Provider }
 ): Promise<MergeResult> {
   const apiKey = options?.apiKey;
   const repoPath = options?.repoPath ?? '.';
@@ -507,6 +510,7 @@ Singletons should not appear. Return [] if no findings describe the same issue.`
 
   const result = await callHaiku({
     apiKey,
+    provider: options?.provider,
     prompt,
     schema: MergeGroupsSchema,
     maxTokens: 512,

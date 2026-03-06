@@ -191,6 +191,8 @@ export const SkillReportSchema = z.object({
   auxiliaryUsage: AuxiliaryUsageMapSchema.optional(),
   /** Per-file breakdown of findings, timing, and usage */
   files: z.array(FileReportSchema).optional(),
+  /** Provider used for this skill's analysis */
+  provider: z.string().optional(),
   /** Model used for this skill's analysis */
   model: z.string().optional(),
 });

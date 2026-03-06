@@ -6,6 +6,7 @@ import { applyDiffToContent } from '../diff/apply.js';
 import type { Finding, UsageStats } from '../types/index.js';
 import { callHaiku } from './haiku.js';
 import { aggregateUsage } from './usage.js';
+import type { Provider } from '../config/schema.js';
 
 export interface FixQualityStats {
   checked: number;
@@ -24,6 +25,7 @@ interface SanitizeSuggestedFixesOptions {
   repoPath: string;
   apiKey?: string;
   maxRetries?: number;
+  provider?: Provider;
 }
 
 const SEMANTIC_PROMPT_MAX_CHARS = 4000;
@@ -128,7 +130,8 @@ async function runSemanticGate(
   fileContent: string,
   patchedContent: string,
   apiKey?: string,
-  maxRetries?: number
+  maxRetries?: number,
+  provider?: Provider
 ): Promise<{ verdict: 'pass' | 'fail' | 'unavailable'; usage?: UsageStats }> {
   if (!apiKey) {
     return { verdict: 'unavailable' };
@@ -156,6 +159,7 @@ async function runSemanticGate(
 
   const result = await callHaiku({
     apiKey,
+    provider,
     prompt,
     schema: SemanticFixVerdictSchema,
     maxTokens: 220,
@@ -203,7 +207,8 @@ export async function sanitizeFindingsSuggestedFixes(
       deterministic.fileContent,
       deterministic.patchedContent,
       options.apiKey,
-      options.maxRetries
+      options.maxRetries,
+      options.provider
     );
     if (semantic.usage) {
       semanticUsage.push(semantic.usage);

@@ -1,5 +1,6 @@
 import { ExecError, execFileNonInteractive } from '../utils/exec.js';
 import { WardenAuthenticationError } from './errors.js';
+import type { Provider } from '../config/schema.js';
 
 /**
  * Pre-flight auth check: verify that authentication will work before starting analysis.
@@ -13,7 +14,9 @@ import { WardenAuthenticationError } from './errors.js';
  * Subtler failures (binary exists but sandbox blocks IPC) are caught by the
  * isSubprocessError() handler in analyzeHunk().
  */
-export function verifyAuth({ apiKey }: { apiKey?: string }): void {
+export function verifyAuth({ apiKey, provider = 'claude' }: { apiKey?: string; provider?: Provider }): void {
+  void provider;
+
   // Direct API auth — no subprocess needed
   if (apiKey) return;
 

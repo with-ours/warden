@@ -21,6 +21,17 @@ describe('verifyAuth', () => {
     expect(mockExec).not.toHaveBeenCalled();
   });
 
+  it('accepts PI API key for pi provider', () => {
+    verifyAuth({ apiKey: 'pi-key', provider: 'pi' });
+    expect(mockExec).not.toHaveBeenCalled();
+  });
+
+  it('falls back to CLI auth checks for pi provider without API key', () => {
+    mockExec.mockReturnValue('1.0.0');
+    verifyAuth({ apiKey: undefined, provider: 'pi' });
+    expect(mockExec).toHaveBeenCalledWith('claude', ['--version'], { timeout: 5000 });
+  });
+
   it('checks for claude binary when no API key', () => {
     mockExec.mockReturnValue('1.0.0');
     verifyAuth({ apiKey: undefined });

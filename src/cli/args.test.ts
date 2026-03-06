@@ -66,6 +66,11 @@ describe('parseCliArgs', () => {
     expect(result.options.config).toBe('./custom.toml');
   });
 
+  it('parses --provider option', () => {
+    const result = parseCliArgs(['--provider', 'pi']);
+    expect(result.options.provider).toBe('pi');
+  });
+
   it('parses --json flag', () => {
     const result = parseCliArgs(['--json']);
     expect(result.options.json).toBe(true);

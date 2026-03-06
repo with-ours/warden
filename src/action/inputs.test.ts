@@ -38,11 +38,19 @@ describe('parseActionInputs', () => {
       expect(inputs.anthropicApiKey).toBe('');
     });
 
-    it('throws when no auth token is found', () => {
+    it('allows empty auth tokens (validated later by provider)', () => {
       delete process.env['ANTHROPIC_API_KEY'];
       delete process.env['WARDEN_ANTHROPIC_API_KEY'];
       delete process.env['CLAUDE_CODE_OAUTH_TOKEN'];
-      expect(() => parseActionInputs()).toThrow('Authentication not found');
+      const inputs = parseActionInputs();
+      expect(inputs.anthropicApiKey).toBe('');
+      expect(inputs.oauthToken).toBe('');
+    });
+
+    it('parses provider from INPUT_PROVIDER', () => {
+      process.env['INPUT_PROVIDER'] = 'pi';
+      const inputs = parseActionInputs();
+      expect(inputs.provider).toBe('pi');
     });
   });
 

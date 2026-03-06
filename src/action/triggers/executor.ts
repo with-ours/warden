@@ -10,6 +10,7 @@ import { Sentry } from '../../sentry.js';
 import { ActionFailedError } from '../workflow/base.js';
 import type { ResolvedTrigger } from '../../config/loader.js';
 import type { WardenConfig } from '../../config/schema.js';
+import type { Provider } from '../../config/schema.js';
 import type { EventContext, SkillReport, SeverityThreshold, ConfidenceThreshold } from '../../types/index.js';
 import type { RenderResult } from '../../output/types.js';
 import type { OutputMode } from '../../cli/output/tty.js';
@@ -43,8 +44,9 @@ export interface TriggerExecutorDeps {
   octokit: Octokit;
   context: EventContext;
   config: WardenConfig;
-  anthropicApiKey: string;
-  claudePath: string;
+  apiKey: string;
+  provider: Provider;
+  claudePath?: string;
   /** Global fail-on from action inputs (trigger-specific takes precedence) */
   globalFailOn?: SeverityThreshold;
   /** Global report-on from action inputs (trigger-specific takes precedence) */
@@ -97,7 +99,7 @@ export async function executeTrigger(
     { op: 'trigger.execute', name: `execute ${trigger.name}` },
     async (span) => {
       span.setAttribute('skill.name', trigger.skill);
-      const { octokit, context, config, anthropicApiKey, claudePath } = deps;
+      const { octokit, context, config, apiKey, claudePath, provider } = deps;
 
       logGroup(`Running trigger: ${trigger.name} (skill: ${trigger.skill})`);
 
@@ -134,7 +136,8 @@ export async function executeTrigger(
           }),
           context: filterContextByPaths(context, trigger.filters),
           runnerOptions: {
-            apiKey: anthropicApiKey,
+            apiKey,
+            provider,
             model: trigger.model,
             maxTurns: trigger.maxTurns,
             batchDelayMs: config.defaults?.batchDelayMs,

@@ -35,6 +35,7 @@ export function isAuthenticationErrorMessage(message: string): boolean {
 const AUTH_ERROR_GUIDANCE = `
   claude login                             # Use Claude Code subscription
   export WARDEN_ANTHROPIC_API_KEY=sk-...   # Or use API key
+  export WARDEN_PI_API_KEY=...             # Pi provider API key
 
 https://console.anthropic.com/ for API keys`;
 

@@ -13,6 +13,8 @@ import { execFileNonInteractive } from '../../utils/exec.js';
 import type { EventContext, SkillReport } from '../../types/index.js';
 import { countSeverity } from '../../triggers/matcher.js';
 import type { TriggerResult } from '../triggers/executor.js';
+import type { Provider, WardenConfig } from '../../config/schema.js';
+import type { ActionInputs } from '../inputs.js';
 
 /**
  * Sentinel error thrown by setFailed() so the top-level catch handler
@@ -185,6 +187,21 @@ export function setWorkflowOutputs(outputs: WorkflowOutputs): void {
   setOutput('findings-count', outputs.findingsCount);
   setOutput('high-count', outputs.highCount);
   setOutput('summary', outputs.summary);
+}
+
+export function resolveActionProvider(inputs: ActionInputs, config?: WardenConfig): Provider {
+  if (inputs.provider) return inputs.provider;
+  const envProvider = process.env['WARDEN_PROVIDER'];
+  if (envProvider === 'claude' || envProvider === 'pi') return envProvider;
+  const cfgProvider = config?.defaults?.provider;
+  if (cfgProvider === 'claude' || cfgProvider === 'pi') return cfgProvider;
+  return 'claude';
+}
+
+export function getActionProviderApiKey(provider: Provider, inputs: ActionInputs): string {
+  return provider === 'pi'
+    ? (inputs.piApiKey ?? inputs.anthropicApiKey)
+    : inputs.anthropicApiKey;
 }
 
 // -----------------------------------------------------------------------------

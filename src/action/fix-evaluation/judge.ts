@@ -7,6 +7,7 @@ import { emptyUsage } from '../../sdk/usage.js';
 import { FixJudgeVerdictSchema } from './types.js';
 import type { FixJudgeResult } from './types.js';
 import { fetchFileContent, fetchFileLines } from './github.js';
+import type { Provider } from '../../config/schema.js';
 
 export interface FixJudgeInput {
   comment: ExistingComment;
@@ -212,7 +213,8 @@ export async function evaluateFix(
   input: FixJudgeInput,
   context: FixJudgeContext,
   apiKey: string,
-  maxRetries?: number
+  maxRetries?: number,
+  provider: Provider = 'claude'
 ): Promise<FixJudgeResult> {
   const fallback: FixJudgeResult = {
     verdict: { status: 'not_attempted', reasoning: 'Evaluation failed' },
@@ -225,6 +227,7 @@ export async function evaluateFix(
 
   const result = await callHaikuWithTools({
     apiKey,
+    provider,
     prompt,
     schema: FixJudgeVerdictSchema,
     tools: TOOL_DEFINITIONS,

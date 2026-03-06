@@ -74,7 +74,8 @@ describe('executeTrigger', () => {
     octokit: mockOctokit,
     context: mockContext,
     config: mockConfig,
-    anthropicApiKey: 'test-key',
+    apiKey: 'test-key',
+    provider: 'claude',
     claudePath: '/test/claude',
     globalMaxFindings: 10,
   };

@@ -7,6 +7,7 @@ import {
   type WardenConfig,
   type ScheduleConfig,
   type TriggerType,
+  type Provider,
 } from './schema.js';
 import type { SeverityThreshold, ConfidenceThreshold } from '../types/index.js';
 
@@ -94,6 +95,8 @@ export interface ResolvedTrigger {
   failCheck?: boolean;
   /** Model (merged: trigger > skill > defaults > cli > env) */
   model?: string;
+  /** Provider (merged: defaults > cli > env) */
+  provider?: Provider;
   /** Max agentic turns (merged: trigger > skill > defaults) */
   maxTurns?: number;
   /** Minimum confidence for findings (merged: trigger > skill > defaults) */
@@ -111,6 +114,10 @@ function emptyToUndefined(value: string | undefined): string | undefined {
   return value === '' ? undefined : value;
 }
 
+function parseProvider(value: string | undefined): Provider | undefined {
+  return value === 'claude' || value === 'pi' ? value : undefined;
+}
+
 /**
  * Resolve all skills in a config into a flat array of ResolvedTriggers.
  * Each skill x trigger combination produces one entry.
@@ -126,10 +133,13 @@ function emptyToUndefined(value: string | undefined): string | undefined {
  */
 export function resolveSkillConfigs(
   config: WardenConfig,
-  cliModel?: string
+  cliModel?: string,
+  cliProvider?: Provider
 ): ResolvedTrigger[] {
   const defaults = config.defaults;
   const envModel = emptyToUndefined(process.env['WARDEN_MODEL']);
+  const envProvider = parseProvider(emptyToUndefined(process.env['WARDEN_PROVIDER']));
+  const baseProvider = defaults?.provider ?? cliProvider ?? envProvider ?? 'claude';
   const result: ResolvedTrigger[] = [];
 
   for (const skill of config.skills) {
@@ -165,6 +175,7 @@ export function resolveSkillConfigs(
         requestChanges: skill.requestChanges ?? defaults?.requestChanges,
         failCheck: skill.failCheck ?? defaults?.failCheck,
         model: baseModel,
+        provider: baseProvider,
         maxTurns: skill.maxTurns ?? defaults?.maxTurns,
         minConfidence: skill.minConfidence ?? defaults?.minConfidence,
       });
@@ -185,6 +196,7 @@ export function resolveSkillConfigs(
           requestChanges: trigger.requestChanges ?? skill.requestChanges ?? defaults?.requestChanges,
           failCheck: trigger.failCheck ?? skill.failCheck ?? defaults?.failCheck,
           model: emptyToUndefined(trigger.model) ?? baseModel,
+          provider: baseProvider,
           maxTurns: trigger.maxTurns ?? skill.maxTurns ?? defaults?.maxTurns,
           minConfidence: trigger.minConfidence ?? skill.minConfidence ?? defaults?.minConfidence,
           schedule: trigger.schedule,

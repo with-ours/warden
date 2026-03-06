@@ -90,6 +90,7 @@ describe('detectOutputMode', () => {
 
   it('respects FORCE_COLOR environment variable', () => {
     process.env['TERM'] = 'xterm-256color';
+    delete process.env['NO_COLOR'];
     process.env['FORCE_COLOR'] = '1';
     const mode = detectOutputMode();
     expect(mode.supportsColor).toBe(true);

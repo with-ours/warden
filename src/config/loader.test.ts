@@ -447,6 +447,27 @@ describe('resolveSkillConfigs', () => {
       expect(resolved?.minConfidence).toBeUndefined();
     });
   });
+
+  describe('provider resolution', () => {
+    it('defaults to claude when provider is not configured', () => {
+      const [resolved] = resolveSkillConfigs(baseConfig);
+      expect(resolved?.provider).toBe('claude');
+    });
+
+    it('uses defaults.provider when set', () => {
+      const config: WardenConfig = {
+        ...baseConfig,
+        defaults: { provider: 'pi' },
+      };
+      const [resolved] = resolveSkillConfigs(config);
+      expect(resolved?.provider).toBe('pi');
+    });
+
+    it('uses cliProvider when defaults.provider is unset', () => {
+      const [resolved] = resolveSkillConfigs(baseConfig, undefined, 'pi');
+      expect(resolved?.provider).toBe('pi');
+    });
+  });
 });
 
 describe('maxTurns config', () => {

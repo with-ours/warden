@@ -117,11 +117,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WARDEN_MODEL: \${{ secrets.WARDEN_MODEL }}
+      WARDEN_PROVIDER: \${{ vars.WARDEN_PROVIDER }}
       WARDEN_SENTRY_DSN: \${{ secrets.WARDEN_SENTRY_DSN }}
     steps:
       - uses: actions/checkout@v4
       - uses: getsentry/warden@v${majorVersion}
         with:
+          provider: \${{ vars.WARDEN_PROVIDER }}
           anthropic-api-key: \${{ secrets.WARDEN_ANTHROPIC_API_KEY }}
 `;
 }

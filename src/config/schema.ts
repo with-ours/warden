@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { SeverityThresholdSchema, ConfidenceThresholdSchema } from '../types/index.js';
 
+// LLM provider selection
+export const ProviderSchema = z.enum(['claude', 'pi']);
+export type Provider = z.infer<typeof ProviderSchema>;
+
 // Tool names that can be allowed/denied
 export const ToolNameSchema = z.enum([
   'Read',
@@ -152,6 +156,8 @@ export type ChunkingConfig = z.infer<typeof ChunkingConfigSchema>;
 
 // Default configuration that skills inherit from
 export const DefaultsSchema = z.object({
+  /** Default provider for all skills (claude|pi). Default: claude */
+  provider: ProviderSchema.optional(),
   /** Fail the build when findings meet this severity */
   failOn: SeverityThresholdSchema.optional(),
   /** Only report findings at or above this severity */

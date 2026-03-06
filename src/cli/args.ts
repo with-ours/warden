@@ -22,6 +22,8 @@ export const CLIOptionsSchema = z.object({
   parallel: z.number().int().positive().optional(),
   /** Model to use for analysis (fallback when not set in config) */
   model: z.string().optional(),
+  /** Provider to use for analysis (fallback when not set in config) */
+  provider: z.enum(['claude', 'pi']).optional(),
   // Verbosity options
   quiet: z.boolean().default(false),
   verbose: z.number().default(0),
@@ -100,6 +102,7 @@ Options:
   --skill <name>       Run only this skill (default: run all built-in skills)
   --config <path>      Path to warden.toml (default: ./warden.toml)
   -m, --model <model>  Model to use (fallback when not set in config)
+  --provider <name>    Provider to use (claude, pi)
   --json               Output results as JSON
   -o, --output <path>  Write full run output to a JSONL file
   --fail-on <severity> Exit with code 1 if findings >= severity
@@ -281,6 +284,7 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
       skill: { type: 'string' },
       config: { type: 'string' },
       model: { type: 'string', short: 'm' },
+      provider: { type: 'string' },
       json: { type: 'boolean', default: false },
       output: { type: 'string', short: 'o' },
       'fail-on': { type: 'string' },
@@ -470,6 +474,7 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
     skill: values.skill,
     config: values.config,
     model: values.model,
+    provider: values.provider === 'claude' || values.provider === 'pi' ? values.provider : undefined,
     json: values.json,
     output: values.output,
     failOn: values['fail-on'] as SeverityThreshold | undefined,

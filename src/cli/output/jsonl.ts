@@ -56,6 +56,7 @@ export const JsonlRunMetadataSchema = z.object({
   cwd: z.string(),
   runId: z.string(),
   traceId: z.string().optional(),
+  provider: z.string().optional(),
   model: z.string().optional(),
   headSha: z.string().optional(),
 });
@@ -77,6 +78,7 @@ export const JsonlRecordSchema = z.object({
   summary: z.string(),
   findings: z.array(FindingSchema),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  provider: z.string().optional(),
   model: z.string().optional(),
   durationMs: z.number().nonnegative().optional(),
   usage: UsageStatsSchema.optional(),
@@ -168,7 +170,7 @@ function aggregateUsage(reports: SkillReport[]): UsageStats | undefined {
 export function renderJsonlString(
   reports: SkillReport[],
   durationMs: number,
-  options?: { runId?: string; traceId?: string; timestamp?: Date; model?: string; headSha?: string; cwd?: string }
+  options?: { runId?: string; traceId?: string; timestamp?: Date; provider?: string; model?: string; headSha?: string; cwd?: string }
 ): string {
   const timestamp = (options?.timestamp ?? new Date()).toISOString();
   const cwd = options?.cwd ?? process.cwd();
@@ -179,6 +181,7 @@ export function renderJsonlString(
     cwd,
     runId: options?.runId ?? generateRunId(),
     traceId: options?.traceId,
+    provider: options?.provider,
     model: options?.model,
     headSha: options?.headSha,
   };
@@ -192,6 +195,7 @@ export function renderJsonlString(
       summary: report.summary,
       findings: report.findings,
       metadata: report.metadata,
+      provider: report.provider,
       model: report.model,
       durationMs: report.durationMs,
       usage: report.usage,

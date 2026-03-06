@@ -7,6 +7,9 @@ branding:
   color: 'purple'
 
 inputs:
+  provider:
+    description: 'Provider to use (claude or pi). Overrides WARDEN_PROVIDER when set.'
+    required: false
   anthropic-api-key:
     description: 'Anthropic API key (sk-ant-...) or OAuth token. Can also be set via ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN env vars.'
     required: false
@@ -61,6 +64,7 @@ runs:
   using: 'composite'
   steps:
     - name: Install Claude Code CLI
+      if: ${{ inputs.provider != 'pi' && env.WARDEN_PROVIDER != 'pi' }}
       shell: bash
       run: |
         CLAUDE_CODE_VERSION="2.1.32"
@@ -84,6 +88,7 @@ runs:
       id: warden
       shell: bash
       env:
+        INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_CONFIG_PATH: ${{ inputs.config-path }}
@@ -93,5 +98,6 @@ runs:
         INPUT_REQUEST_CHANGES: ${{ inputs.request-changes }}
         INPUT_FAIL_CHECK: ${{ inputs.fail-check }}
         INPUT_PARALLEL: ${{ inputs.parallel }}
+        WARDEN_PROVIDER: ${{ inputs.provider || env.WARDEN_PROVIDER }}
         CLAUDE_CODE_PATH: ${{ env.HOME }}/.local/bin/claude
       run: node ${{ github.action_path }}/dist/action/index.js
