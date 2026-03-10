@@ -6,12 +6,22 @@ import type { TriggerResult } from '../triggers/executor.js';
 import type { ExistingComment } from '../../output/dedup.js';
 import type { RenderResult } from '../../output/types.js';
 
+const { startSpanMock, captureFindingStageMock } = vi.hoisted(() => ({
+  startSpanMock: vi.fn(async (_options: unknown, callback: (span: unknown) => unknown) => callback({})),
+  captureFindingStageMock: vi.fn(),
+}));
+
 // Mock dependencies
 vi.mock('../../output/dedup.js', () => ({
   deduplicateFindings: vi.fn(),
   processDuplicateActions: vi.fn(),
   findingToExistingComment: vi.fn(),
   consolidateBatchFindings: vi.fn(),
+}));
+
+vi.mock('../../sentry.js', () => ({
+  Sentry: { startSpan: startSpanMock },
+  captureFindingStage: captureFindingStageMock,
 }));
 
 vi.mock('../../output/renderer.js', () => ({
@@ -228,6 +238,22 @@ describe('postTriggerReview', () => {
       [{ type: 'react_external', finding, existingComment, matchType: 'hash' }],
       'test-skill'
     );
+    expect(captureFindingStageMock).toHaveBeenNthCalledWith(1, 'review_filtered', [finding], {
+      skill: 'test-skill',
+      triggerName: 'test-trigger',
+    });
+    expect(captureFindingStageMock).toHaveBeenNthCalledWith(2, 'review_consolidated', [finding], {
+      skill: 'test-skill',
+      triggerName: 'test-trigger',
+    });
+    expect(captureFindingStageMock).toHaveBeenNthCalledWith(3, 'review_deduped', [], {
+      skill: 'test-skill',
+      triggerName: 'test-trigger',
+    });
+    expect(captureFindingStageMock).toHaveBeenNthCalledWith(4, 'review_posted', [], {
+      skill: 'test-skill',
+      triggerName: 'test-trigger',
+    });
     // Since all findings were duplicates and failOn not triggered, nothing new to post
     expect(postResult.posted).toBe(false);
   });
