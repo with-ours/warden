@@ -1,52 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Finding, UsageStats } from '../types/index.js';
-
-const {
-  startSpanMock,
-  captureFindingStageMock,
-  emitDedupMetricsMock,
-  emitFixGateMetricsMock,
-  loggerInfoMock,
-} = vi.hoisted(() => ({
-  startSpanMock: vi.fn(async (_options: unknown, callback: (span: unknown) => unknown) => callback({})),
-  captureFindingStageMock: vi.fn(),
-  emitDedupMetricsMock: vi.fn(),
-  emitFixGateMetricsMock: vi.fn(),
-  loggerInfoMock: vi.fn(),
-}));
-
-vi.mock('../sentry.js', () => ({
-  Sentry: { startSpan: startSpanMock },
-  captureFindingStage: captureFindingStageMock,
-  emitDedupMetrics: emitDedupMetricsMock,
-  emitFixGateMetrics: emitFixGateMetricsMock,
-  logger: { info: loggerInfoMock },
-}));
-
-vi.mock('./extract.js', async () => {
-  const actual = await vi.importActual('./extract.js');
-  return {
-    ...(actual as object),
-    deduplicateFindings: vi.fn((findings: Finding[]) => findings.slice(0, 1)),
-    mergeCrossLocationFindings: vi.fn(async (findings: Finding[]) => ({ findings })),
-  };
-});
-
-vi.mock('./fix-quality.js', () => ({
-  sanitizeFindingsSuggestedFixes: vi.fn(async (findings: Finding[]) => ({
-    findings,
-    stats: {
-      checked: 0,
-      strippedDeterministic: 0,
-      strippedSemantic: 0,
-      semanticUnavailable: 0,
-    },
-  })),
-}));
-
-import { deduplicateFindings, mergeCrossLocationFindings } from './extract.js';
-import { sanitizeFindingsSuggestedFixes } from './fix-quality.js';
-import { filterOutOfRangeFindings, finalizeSkillReport } from './analyze.js';
+import { describe, expect, it } from 'vitest';
+import type { Finding } from '../types/index.js';
+import { filterOutOfRangeFindings } from './analyze.js';
 
 function makeFinding(id: string, title: string, startLine = 10): Finding {
   return {
@@ -121,49 +75,5 @@ describe('filterOutOfRangeFindings', () => {
     const { filtered, dropped } = filterOutOfRangeFindings([], hunkRange);
     expect(filtered).toEqual([]);
     expect(dropped).toEqual([]);
-  });
-});
-
-describe('finalizeSkillReport', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('emits report stages from the shared finalization path', async () => {
-    const findings = [makeFinding('A', 'First'), makeFinding('B', 'Second')];
-    const usage: UsageStats = { inputTokens: 10, outputTokens: 5, costUSD: 0.01 };
-
-    const report = await finalizeSkillReport({
-      skillName: 'security-review',
-      startTime: Date.now(),
-      repoPath: '/repo',
-      allFindings: findings,
-      allUsage: [usage],
-      allAuxiliaryUsage: [],
-      files: [{ filename: 'src/test.ts', findingCount: 2, durationMs: 50, usage }],
-    });
-
-    expect(deduplicateFindings).toHaveBeenCalledWith(findings);
-    expect(mergeCrossLocationFindings).toHaveBeenCalledWith([findings[0]], {
-      apiKey: undefined,
-      repoPath: '/repo',
-      maxRetries: undefined,
-    });
-    expect(sanitizeFindingsSuggestedFixes).toHaveBeenCalledWith([findings[0]], {
-      repoPath: '/repo',
-      apiKey: undefined,
-      maxRetries: undefined,
-    });
-    expect(captureFindingStageMock.mock.calls.map((call) => call[0])).toEqual([
-      'report_deduped',
-      'report_merged',
-      'report_final',
-    ]);
-    expect(captureFindingStageMock).toHaveBeenNthCalledWith(1, 'report_deduped', [findings[0]], {
-      skill: 'security-review',
-    });
-    expect(report.findings).toEqual([findings[0]]);
-    expect(report.skill).toBe('security-review');
-    expect(report.files).toHaveLength(1);
   });
 });

@@ -170,10 +170,6 @@ export async function postTriggerReview(
     {
       op: 'trigger.review_post',
       name: `review ${result.triggerName}`,
-      attributes: {
-        'skill.name': report.skill,
-        'trigger.name': result.triggerName,
-      },
     },
     async () => {
       // Filter findings by reportOn threshold and confidence
