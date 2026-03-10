@@ -387,9 +387,9 @@ export async function postTriggerReview(
 
         const renderResultToPost = getRenderResultToPost(result, report, filteredFindings, dedupedFindings);
         const postedFindings = getPostedFindings(dedupedFindings, result.maxFindings);
-        captureReviewFindingStage('review_posted', postedFindings, report, result.triggerName);
 
         await postRenderedReview(deps, result, renderResultToPost, postedFindings, report.skill);
+        captureReviewFindingStage('review_posted', postedFindings, report, result.triggerName);
 
         for (const finding of postedFindings) {
           const comment = findingToExistingComment(finding, report.skill);
