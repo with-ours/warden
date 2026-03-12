@@ -216,6 +216,8 @@ This span exists to make the report lifecycle visible across all execution paths
 - `report_merged`
 - `report_final`
 
+`report_final` is a full snapshot. `report_deduped` and `report_merged` are reference-only stages that record finding IDs and fingerprints, not full finding bodies.
+
 ### `trigger.review_post`
 
 This span wraps the action-only review posting pipeline for a single trigger. It emits child `warden.findings` spans after each mutating stage:
@@ -224,6 +226,8 @@ This span wraps the action-only review posting pipeline for a single trigger. It
 - `review_consolidated` after intra-batch consolidation
 - `review_deduped` after dedup against existing comments
 - `review_posted` for the exact set that is about to be posted after `maxFindings`
+
+`review_posted` is a full snapshot. The earlier review stages are reference-only.
 
 ### `warden.findings`
 
@@ -241,22 +245,21 @@ Top-level attributes:
 | `warden.findings.parent_span_id` | string | Parent active span span ID when available |
 | `warden.findings.skill` | string | Skill name when available |
 | `warden.findings.trigger_name` | string | Trigger name on review-stage snapshots |
+| `warden.findings.ids` | string[] | Finding IDs in stage order |
+| `warden.findings.fingerprints` | string[] | Stable correlation keys in stage order |
 
-Per-finding attributes are flattened and indexed:
+For `full` stages, per-finding attributes are flattened and indexed:
 
 - `warden.findings.{i}.id`
 - `warden.findings.{i}.fingerprint`
 - `warden.findings.{i}.severity`
 - `warden.findings.{i}.confidence`
 - `warden.findings.{i}.title`
-- `warden.findings.{i}.description`
-- `warden.findings.{i}.verification`
 - `warden.findings.{i}.elapsed_ms`
 - `warden.findings.{i}.location.path`
 - `warden.findings.{i}.location.start_line`
 - `warden.findings.{i}.location.end_line`
-- `warden.findings.{i}.suggested_fix.description`
-- `warden.findings.{i}.suggested_fix.diff`
+- `warden.findings.{i}.has_suggested_fix`
 - `warden.findings.{i}.additional_locations.count`
 - `warden.findings.{i}.additional_locations.{j}.path`
 - `warden.findings.{i}.additional_locations.{j}.start_line`
@@ -264,7 +267,7 @@ Per-finding attributes are flattened and indexed:
 
 #### Encoding rule
 
-OTel/Sentry span attributes are flat key/value pairs. They support arrays of primitives, but not arrays of objects. For that reason, findings are encoded as flattened indexed keys (`warden.findings.0.location.path`), not as a nested JSON/object attribute like `warden.findings = [{...}]`.
+OTel/Sentry span attributes are flat key/value pairs. They support arrays of primitives, but not arrays of objects. For that reason, reference stages use primitive arrays (`warden.findings.ids`, `warden.findings.fingerprints`) while full snapshot stages use flattened indexed keys (`warden.findings.0.location.path`) instead of a nested JSON/object attribute like `warden.findings = [{...}]`.
 
 #### Why multiple stages
 

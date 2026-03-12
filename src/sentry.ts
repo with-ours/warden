@@ -1,45 +1,21 @@
-import { createHash } from 'node:crypto';
 import * as Sentry from '@sentry/node';
 import type { Severity, SkillReport, Finding } from './types/index.js';
 import { SEVERITY_ORDER } from './types/index.js';
 import { getVersion } from './utils/index.js';
+import {
+  buildFindingStageAttributes,
+  type ActiveSpanIds,
+  type FindingTelemetryContext,
+  type FindingTelemetryStage,
+  type SpanAttributes,
+} from './telemetry/findings.js';
 
 export type SentryContext = 'cli' | 'action';
-export type FindingTelemetryStage =
-  | 'initial'
-  | 'report_deduped'
-  | 'report_merged'
-  | 'report_final'
-  | 'review_filtered'
-  | 'review_consolidated'
-  | 'review_deduped'
-  | 'review_posted';
-
-type SpanAttributeValue =
-  | string
-  | number
-  | boolean
-  | (string | null | undefined)[]
-  | (number | null | undefined)[]
-  | (boolean | null | undefined)[];
-
-type SpanAttributes = Record<string, SpanAttributeValue | undefined>;
+export type { FindingTelemetryStage } from './telemetry/findings.js';
 
 interface SpanLike {
   setAttributes(attributes: SpanAttributes): unknown;
   spanContext(): { traceId: string; spanId: string };
-}
-
-export interface ActiveSpanIds {
-  traceId: string;
-  spanId: string;
-}
-
-export interface FindingTelemetryContext {
-  skill?: string;
-  triggerName?: string;
-  parentTraceId?: string;
-  parentSpanId?: string;
 }
 
 let initialized = false;
@@ -103,72 +79,13 @@ export function getActiveSpanIds(): ActiveSpanIds | undefined {
   }
 }
 
-export function getFindingFingerprint(finding: Finding): string {
-  const location = finding.location
-    ? `${finding.location.path}:${finding.location.startLine}:${finding.location.endLine ?? ''}`
-    : 'general';
-  return createHash('sha1')
-    .update([
-      location,
-      finding.severity,
-      finding.confidence ?? '',
-      finding.title,
-      finding.description,
-    ].join('\n'))
-    .digest('hex');
-}
-
-function buildFindingStageAttributes(
-  stage: FindingTelemetryStage,
-  findings: Finding[],
-  context: FindingTelemetryContext = {},
-  spanIds?: ActiveSpanIds
-): SpanAttributes {
-  const attrs: SpanAttributes = {
-    'warden.findings.stage': stage,
-    'warden.findings.count': findings.length,
-    'warden.findings.trace_id': spanIds?.traceId,
-    'warden.findings.span_id': spanIds?.spanId,
-    'warden.findings.parent_trace_id': context.parentTraceId,
-    'warden.findings.parent_span_id': context.parentSpanId,
-    'warden.findings.skill': context.skill,
-    'warden.findings.trigger_name': context.triggerName,
-  };
-
-  findings.forEach((finding, index) => {
-    const prefix = `warden.findings.${index}`;
-    attrs[`${prefix}.id`] = finding.id;
-    attrs[`${prefix}.fingerprint`] = getFindingFingerprint(finding);
-    attrs[`${prefix}.severity`] = finding.severity;
-    attrs[`${prefix}.confidence`] = finding.confidence;
-    attrs[`${prefix}.title`] = finding.title;
-    attrs[`${prefix}.description`] = finding.description;
-    attrs[`${prefix}.verification`] = finding.verification;
-    attrs[`${prefix}.elapsed_ms`] = finding.elapsedMs;
-    attrs[`${prefix}.location.path`] = finding.location?.path;
-    attrs[`${prefix}.location.start_line`] = finding.location?.startLine;
-    attrs[`${prefix}.location.end_line`] = finding.location?.endLine;
-    attrs[`${prefix}.suggested_fix.description`] = finding.suggestedFix?.description;
-    attrs[`${prefix}.suggested_fix.diff`] = finding.suggestedFix?.diff;
-    attrs[`${prefix}.additional_locations.count`] = finding.additionalLocations?.length ?? 0;
-
-    finding.additionalLocations?.forEach((location, locationIndex) => {
-      const locationPrefix = `${prefix}.additional_locations.${locationIndex}`;
-      attrs[`${locationPrefix}.path`] = location.path;
-      attrs[`${locationPrefix}.start_line`] = location.startLine;
-      attrs[`${locationPrefix}.end_line`] = location.endLine;
-    });
-  });
-
-  return attrs;
-}
-
 export function setFindingStageAttributes(
   span: SpanLike,
   stage: FindingTelemetryStage,
   findings: Finding[],
   context: FindingTelemetryContext = {}
 ): void {
+  if (!initialized) return;
   try {
     span.setAttributes(buildFindingStageAttributes(stage, findings, context, span.spanContext()));
   } catch {
