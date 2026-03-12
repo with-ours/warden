@@ -299,9 +299,9 @@ async function postRenderedReview(
   renderResult: RenderResult | undefined,
   findings: Finding[],
   skill: string
-): Promise<void> {
+): Promise<boolean> {
   if (!renderResult) {
-    return;
+    return false;
   }
 
   try {
@@ -315,6 +315,8 @@ async function postRenderedReview(
     const fallback = moveCommentsToBody(renderResult, findings, skill);
     await postReviewToGitHub(deps.octokit, deps.context, fallback);
   }
+
+  return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -388,7 +390,10 @@ export async function postTriggerReview(
         const renderResultToPost = getRenderResultToPost(result, report, filteredFindings, dedupedFindings);
         const postedFindings = getPostedFindings(dedupedFindings, result.maxFindings);
 
-        await postRenderedReview(deps, result, renderResultToPost, postedFindings, report.skill);
+        const posted = await postRenderedReview(deps, result, renderResultToPost, postedFindings, report.skill);
+        if (!posted) {
+          return { posted: false, newComments, shouldFail: false };
+        }
         captureReviewFindingStage('review_posted', postedFindings, report, result.triggerName);
 
         for (const finding of postedFindings) {
