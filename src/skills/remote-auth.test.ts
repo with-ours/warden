@@ -149,7 +149,7 @@ describe('fetchRemote auth behavior', () => {
       throw new Error('expected fetchRemote to throw');
     } catch (error) {
       expect(error).toBeInstanceOf(SkillLoaderError);
-      expect((error as Error).message).toContain('Failed to authenticate when cloning owner/repo');
+      expect((error as Error).message).toContain('Failed to authenticate when fetching owner/repo');
       expect((error as Error).cause).toBeInstanceOf(Error);
       expect(((error as Error).cause as Error).message).toContain('authentication failed');
     }

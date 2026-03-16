@@ -481,7 +481,7 @@ export async function fetchRemote(ref: string, options: FetchRemoteOptions = {})
         const message = error instanceof Error ? error.message : String(error);
         if (useGitHubAuth && isGitAuthFailure(message)) {
           throw new SkillLoaderError(
-            `Failed to authenticate when cloning ${stateKey}. ` +
+            `Failed to authenticate when fetching ${stateKey}. ` +
             `Ensure the provided GitHub token has read access to ${parsed.owner}/${parsed.repo}.`,
             { cause: error }
           );
