@@ -448,7 +448,7 @@ export async function fetchRemote(ref: string, options: FetchRemoteOptions = {})
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (token && isGitAuthFailure(message)) {
+      if (useGitHubAuth && isGitAuthFailure(message)) {
         throw new SkillLoaderError(
           `Failed to authenticate when cloning ${stateKey}. ` +
           `Ensure the provided GitHub token has read access to ${parsed.owner}/${parsed.repo}.`,
@@ -458,7 +458,7 @@ export async function fetchRemote(ref: string, options: FetchRemoteOptions = {})
       // Unauthenticated shorthand HTTPS failure: provide explicit auth guidance.
       if (!token && !parsed.cloneUrl && (message.includes('terminal prompts disabled') || message.includes('could not read Username'))) {
         throw new SkillLoaderError(
-          `Failed to clone ${stateKey} via HTTPS. For private repos, provide a GitHub token (GITHUB_TOKEN or WARDEN_GITHUB_TOKEN) or use the SSH URL: warden add --remote git@github.com:${parsed.owner}/${parsed.repo}.git`,
+          `Failed to clone ${stateKey} via HTTPS. For private repos, provide a GitHub token or use the SSH URL: warden add --remote git@github.com:${parsed.owner}/${parsed.repo}.git`,
           { cause: error }
         );
       }

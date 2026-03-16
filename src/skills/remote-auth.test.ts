@@ -142,6 +142,47 @@ describe('fetchRemote auth behavior', () => {
     }
   });
 
+  it('does not remap auth-like failures for non-github remotes when a github token is present', async () => {
+    const remotePath = getRemotePath('owner/repo');
+    mkdirSync(remotePath, { recursive: true });
+    saveState({
+      remotes: {
+        'owner/repo': {
+          sha: 'abc123',
+          fetchedAt: new Date().toISOString(),
+          cloneUrl: 'https://example.com/owner/repo.git',
+        },
+      },
+    });
+
+    vi.mocked(execGitNonInteractive).mockImplementation((args: string[]) => {
+      if (args[0] === 'fetch') {
+        throw new Error('fatal: authentication failed');
+      }
+      if (args[0] === 'rev-parse') return 'deadbeef';
+      return '';
+    });
+
+    await expect(fetchRemote('owner/repo', { githubToken: 'test-token', force: true }))
+      .rejects.toThrow('Git command failed: git fetch --depth=1 -- https://example.com/owner/repo.git: fatal: authentication failed');
+    await expect(fetchRemote('owner/repo', { githubToken: 'test-token', force: true }))
+      .rejects.not.toThrow('Failed to authenticate when cloning owner/repo');
+  });
+
+  it('suggests a generic github token for unauthenticated shorthand https failures', async () => {
+    vi.mocked(execGitNonInteractive).mockImplementation((args: string[]) => {
+      if (args[0] === 'clone') {
+        throw new Error('fatal: could not read Username for \'https://github.com\': terminal prompts disabled');
+      }
+      return '';
+    });
+
+    await expect(fetchRemote('owner/repo'))
+      .rejects.toThrow('provide a GitHub token or use the SSH URL');
+    await expect(fetchRemote('owner/repo'))
+      .rejects.not.toThrow('WARDEN_GITHUB_TOKEN');
+  });
+
   it('keeps per-command auth env isolated across concurrent fetches', async () => {
     await Promise.all([
       fetchRemote('owner/repo-a', { githubToken: 'token-a' }),
