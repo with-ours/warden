@@ -124,6 +124,37 @@ describe('fetchRemote auth behavior', () => {
     }
   });
 
+  it('preserves helpful auth guidance on github cache refresh failures', async () => {
+    const remotePath = getRemotePath('owner/repo');
+    mkdirSync(remotePath, { recursive: true });
+    saveState({
+      remotes: {
+        'owner/repo': {
+          sha: 'abc123',
+          fetchedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    vi.mocked(execGitNonInteractive).mockImplementation((args: string[]) => {
+      if (args[0] === 'fetch') {
+        throw new Error('fatal: authentication failed');
+      }
+      if (args[0] === 'rev-parse') return 'deadbeef';
+      return '';
+    });
+
+    try {
+      await fetchRemote('owner/repo', { githubToken: 'test-token', force: true });
+      throw new Error('expected fetchRemote to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SkillLoaderError);
+      expect((error as Error).message).toContain('Failed to authenticate when cloning owner/repo');
+      expect((error as Error).cause).toBeInstanceOf(Error);
+      expect(((error as Error).cause as Error).message).toContain('authentication failed');
+    }
+  });
+
   it('preserves original HTTPS prompt failure as cause for unauthenticated shorthand refs', async () => {
     vi.mocked(execGitNonInteractive).mockImplementation((args: string[]) => {
       if (args[0] === 'clone') {

@@ -469,12 +469,24 @@ export async function fetchRemote(ref: string, options: FetchRemoteOptions = {})
     onProgress?.(`Updating ${ref}...`);
 
     if (!isPinned) {
-      // For unpinned refs, pull latest from the explicit remote URL so cached SSH remotes
-      // keep their transport semantics across refreshes.
-      if (useGitHubAuth) {
-        execGit(['fetch', '--depth=1', '--', repoUrl], { cwd: remotePath, env: gitAuthEnv });
-      } else {
-        execGit(['fetch', '--depth=1', '--', repoUrl], { cwd: remotePath });
+      try {
+        // For unpinned refs, pull latest from the explicit remote URL so cached SSH remotes
+        // keep their transport semantics across refreshes.
+        if (useGitHubAuth) {
+          execGit(['fetch', '--depth=1', '--', repoUrl], { cwd: remotePath, env: gitAuthEnv });
+        } else {
+          execGit(['fetch', '--depth=1', '--', repoUrl], { cwd: remotePath });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (useGitHubAuth && isGitAuthFailure(message)) {
+          throw new SkillLoaderError(
+            `Failed to authenticate when cloning ${stateKey}. ` +
+            `Ensure the provided GitHub token has read access to ${parsed.owner}/${parsed.repo}.`,
+            { cause: error }
+          );
+        }
+        throw error;
       }
       execGit(['reset', '--hard', 'FETCH_HEAD'], { cwd: remotePath });
     }
