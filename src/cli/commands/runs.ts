@@ -2,7 +2,7 @@ import { existsSync, openSync, closeSync, fstatSync, readSync, readdirSync, read
 import { dirname, join, resolve } from 'node:path';
 import chalk from 'chalk';
 import { loadWardenConfig } from '../../config/loader.js';
-import type { ConfidenceThreshold, Severity, SkillReport } from '../../types/index.js';
+import { isExtractionErrorCode, type ConfidenceThreshold, type Severity, type SkillReport } from '../../types/index.js';
 import type { CLIOptions, RunsOptions } from '../args.js';
 import { getRepoRoot } from '../git.js';
 import { findExpiredArtifacts } from '../log-cleanup.js';
@@ -16,6 +16,7 @@ import {
   parseJsonlReports,
   parseLogMetadata,
   renderJsonlString,
+  JsonlChunkRecordSchema,
   JsonlRecordSchema,
   JsonlSummaryRecordSchema,
   type JsonlRunMetadata,
@@ -162,8 +163,7 @@ export async function runRunsList(
   try {
     entries = readdirSync(logDir)
       .filter((e) => e.endsWith('.jsonl'))
-      .sort()
-      .reverse(); // newest first (filenames embed timestamps)
+      .sort((a, b) => filenameTimestamp(b).localeCompare(filenameTimestamp(a)));
   } catch {
     entries = [];
   }
@@ -528,6 +528,7 @@ export async function runRunsGc(options: CLIOptions, reporter: Reporter): Promis
   for (const filePath of expired) {
     try {
       unlinkSync(filePath);
+      try { unlinkSync(`${filePath}.done`); } catch { /* sidecar may not exist */ }
       deleted++;
     } catch {
       // Skip files we can't delete
@@ -557,13 +558,13 @@ function resolveFollowTarget(arg: string | undefined, logDir: string): string | 
   try {
     entries = readdirSync(logDir)
       .filter((e) => e.endsWith('.jsonl'))
-      .sort()
-      .reverse();
+      .sort((a, b) => filenameTimestamp(b).localeCompare(filenameTimestamp(a)));
   } catch {
     return undefined;
   }
   for (const entry of entries) {
     const filePath = join(logDir, entry);
+    if (!arg && existsSync(`${filePath}.done`)) continue;
     let content: string;
     try {
       content = readFileSync(filePath, 'utf-8');
@@ -613,6 +614,39 @@ function renderFollowLine(line: string, reporter: Reporter): { stop: boolean } {
   }
 
   if (obj.type === 'fix-evaluation') return { stop: false };
+
+  const chunkResult = JsonlChunkRecordSchema.safeParse(obj);
+  if (chunkResult.success) {
+    const chunk = chunkResult.data;
+    if (chunk.findings.length === 0 && !chunk.error) return { stop: false };
+    console.log(renderTerminalReport([{
+      skill: chunk.skill,
+      summary: chunk.findings.length > 0
+        ? `${chunk.skill}: Found ${chunk.findings.length} ${pluralize(chunk.findings.length, 'issue')}`
+        : `${chunk.skill}: chunk failed`,
+      findings: chunk.findings,
+      durationMs: chunk.durationMs,
+      usage: chunk.usage,
+      model: chunk.model,
+      files: [{
+        filename: chunk.chunk.file,
+        findings: chunk.findings.length,
+        durationMs: chunk.durationMs,
+        usage: chunk.usage,
+      }],
+      error: chunk.error,
+      hunkFailures: chunk.error
+        ? [{
+            type: isExtractionErrorCode(chunk.error.code) ? 'extraction' : 'analysis',
+            filename: chunk.chunk.file,
+            lineRange: chunk.chunk.lineRange,
+            code: chunk.error.code,
+            message: chunk.error.message,
+          }]
+        : undefined,
+    }], reporter.mode, { verbosity: reporter.verbosity }));
+    return { stop: false };
+  }
 
   const skillResult = JsonlRecordSchema.safeParse(obj);
   if (!skillResult.success) {
@@ -673,7 +707,10 @@ export async function runRunsFollow(
   // Render anything already on disk and remember where we left off.
   let offset = 0;
   let buffer = '';
+  let fileIdentity: string | undefined;
   let stopped = false;
+  const emittedJsonLines = new Set<string>();
+  const targetComplete = () => existsSync(`${target}.done`);
 
   const drainFile = (): void => {
     let fd: number;
@@ -684,6 +721,21 @@ export async function runRunsFollow(
     }
     try {
       const stat = fstatSync(fd);
+      const identity = `${stat.dev}:${stat.ino}`;
+      if (fileIdentity && identity !== fileIdentity) {
+        fileIdentity = identity;
+        buffer = '';
+        if (offset > 0 && !options.json) {
+          offset = stat.size;
+          return;
+        }
+        offset = 0;
+      }
+      fileIdentity = identity;
+      if (stat.size < offset) {
+        buffer = '';
+        offset = 0;
+      }
       if (stat.size <= offset) return;
       const len = stat.size - offset;
       const buf = Buffer.alloc(len);
@@ -695,9 +747,9 @@ export async function runRunsFollow(
         const line = buffer.slice(0, nl);
         buffer = buffer.slice(nl + 1);
         if (!line.trim()) continue;
-        const result = options.json
-          ? passthroughFollowLine(line)
-          : renderFollowLine(line, reporter);
+        if (options.json && emittedJsonLines.has(line)) continue;
+        if (options.json) emittedJsonLines.add(line);
+        const result = options.json ? passthroughFollowLine(line) : renderFollowLine(line, reporter);
         if (result.stop) {
           stopped = true;
           return;
@@ -709,14 +761,14 @@ export async function runRunsFollow(
   };
 
   drainFile();
-  if (stopped) return 0;
+  if (stopped || targetComplete()) return 0;
 
   return new Promise<number>((resolvePromise) => {
     let watcher: ReturnType<typeof watch> | undefined;
 
     const tick = () => {
       drainFile();
-      if (stopped) finish(0);
+      if (stopped || targetComplete()) finish(0);
     };
 
     // fs.watch is best-effort across platforms; the 1s poll below is the

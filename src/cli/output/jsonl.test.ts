@@ -11,15 +11,20 @@ import {
   shortRunId,
   readJsonlLog,
   parseJsonlReports,
+  parseLogMetadata,
+  JsonlChunkRecordSchema,
   JsonlRecordSchema,
   JsonlSummaryRecordSchema,
   JsonlFixEvaluationRecordSchema,
+  renderJsonlChunkLine,
+  renderJsonlChunkRecords,
   renderJsonlString,
   renderJsonlSkillLine,
   renderJsonlSummaryLine,
   buildRunMetadata,
   initJsonlFile,
   appendJsonlLine,
+  type JsonlChunkRecord,
   type JsonlRecord,
   type JsonlSummaryRecord,
 } from './jsonl.js';
@@ -563,6 +568,40 @@ describe('repo-local logging integration', () => {
   });
 });
 
+describe('parseLogMetadata', () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `warden-test-${Date.now()}`);
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true });
+    }
+  });
+
+  it('does not count synthetic empty chunk files', () => {
+    const run = buildRunMetadata({ runId: 'metadata-run-error', durationMs: 120 });
+    const chunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'run',
+      chunk: { file: '', index: 1, total: 1, lineRange: '' },
+      status: 'error',
+      findings: [],
+      durationMs: 120,
+      error: { code: 'auth_failed', message: 'bad key' },
+    };
+    const outputPath = join(testDir, 'run-error.jsonl');
+
+    writeFileSync(outputPath, renderJsonlChunkLine(chunk));
+
+    expect(parseLogMetadata(outputPath)?.totalFiles).toBe(0);
+  });
+});
+
 describe('parseJsonlReports', () => {
   it('reconstructs SkillReport from JSONL content', () => {
     // Sample JSONL content that matches what would be written by renderJsonlString
@@ -606,6 +645,225 @@ describe('parseJsonlReports', () => {
     expect(result.reports.length).toBe(0);
     expect(result.totalDurationMs).toBe(100);
     expect(result.runMetadata?.runId).toBe('empty-123');
+  });
+
+  it('reconstructs skill reports from homogeneous chunk records', () => {
+    const run = buildRunMetadata({
+      runId: 'chunk-123',
+      durationMs: 100,
+      timestamp: new Date('2026-02-18T14:32:15.123Z'),
+      cwd: '/test',
+      model: 'claude-test',
+    });
+    const chunks: JsonlChunkRecord[] = [
+      {
+        schemaVersion: 1,
+        run,
+        skill: 'security-review',
+        model: 'claude-test',
+        chunk: { file: 'src/api.ts', index: 1, total: 2, lineRange: '10-20' },
+        status: 'ok',
+        findings: [{ id: 'sec-001', severity: 'high', title: 'SQL Injection', description: 'Unsafe query' }],
+        usage: { inputTokens: 1000, outputTokens: 500, costUSD: 0.01 },
+        durationMs: 1200,
+      },
+      {
+        schemaVersion: 1,
+        run: { ...run, durationMs: 2500 },
+        skill: 'security-review',
+        model: 'claude-test',
+        chunk: { file: 'src/api.ts', index: 2, total: 2, lineRange: '21-30' },
+        status: 'ok',
+        findings: [],
+        usage: { inputTokens: 800, outputTokens: 200, costUSD: 0.005 },
+        durationMs: 900,
+      },
+    ];
+
+    const result = parseJsonlReports(chunks.map((chunk) => renderJsonlChunkLine(chunk)).join(''));
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]!.skill).toBe('security-review');
+    expect(result.reports[0]!.findings).toHaveLength(1);
+    expect(result.reports[0]!.files).toEqual([
+      {
+        filename: 'src/api.ts',
+        findings: 1,
+        durationMs: 2100,
+        usage: { inputTokens: 1800, outputTokens: 700, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0.015 },
+      },
+    ]);
+    expect(result.reports[0]!.usage?.inputTokens).toBe(1800);
+    expect(result.totalDurationMs).toBe(2500);
+    expect(result.runMetadata?.runId).toBe('chunk-123');
+  });
+
+  it('classifies chunk errors from explicit error codes', () => {
+    const run = buildRunMetadata({ runId: 'chunk-errors', durationMs: 300 });
+    const chunks: JsonlChunkRecord[] = [
+      {
+        schemaVersion: 1,
+        run,
+        skill: 'security-review',
+        chunk: { file: 'src/api.ts', index: 1, total: 2, lineRange: '10-20' },
+        status: 'error',
+        findings: [],
+        usage: { inputTokens: 100, outputTokens: 10, costUSD: 0.001 },
+        durationMs: 100,
+        error: { code: 'extraction_invalid_json', message: 'bad json' },
+      },
+      {
+        schemaVersion: 1,
+        run,
+        skill: 'security-review',
+        chunk: { file: 'src/api.ts', index: 2, total: 2, lineRange: '21-30' },
+        status: 'error',
+        findings: [],
+        usage: { inputTokens: 200, outputTokens: 20, costUSD: 0.002 },
+        durationMs: 200,
+        error: { code: 'sdk_error', message: 'sdk failed' },
+      },
+      {
+        schemaVersion: 1,
+        run,
+        skill: 'security-review',
+        chunk: { file: '', index: 1, total: 1, lineRange: '' },
+        status: 'error',
+        findings: [],
+        usage: { inputTokens: 300, outputTokens: 30, costUSD: 0.003 },
+        durationMs: 300,
+        error: { code: 'all_hunks_failed', message: 'All chunks failed.' },
+      },
+    ];
+
+    const result = parseJsonlReports(chunks.map((chunk) => renderJsonlChunkLine(chunk)).join(''));
+
+    const report = result.reports[0]!;
+    expect(report.failedExtractions).toBe(1);
+    expect(report.failedHunks).toBe(1);
+    expect(report.error?.code).toBe('all_hunks_failed');
+    expect(report.hunkFailures?.map((failure) => failure.type)).toEqual(['extraction', 'analysis']);
+    expect(report.durationMs).toBe(300);
+    expect(report.usage?.inputTokens).toBe(300);
+  });
+
+  it('only treats error-status chunks as extraction failures', () => {
+    const run = buildRunMetadata({ runId: 'chunk-extraction-status', durationMs: 300 });
+    const chunks: JsonlChunkRecord[] = [
+      {
+        schemaVersion: 1,
+        run,
+        skill: 'security-review',
+        chunk: { file: 'src/api.ts', index: 1, total: 2, lineRange: '10-20' },
+        status: 'ok',
+        findings: [],
+        durationMs: 100,
+        error: { code: 'extraction_invalid_json', message: 'ignored metadata' },
+      },
+      {
+        schemaVersion: 1,
+        run,
+        skill: 'security-review',
+        chunk: { file: 'src/api.ts', index: 2, total: 2, lineRange: '21-30' },
+        status: 'error',
+        findings: [],
+        durationMs: 200,
+        error: { code: 'extraction_invalid_json', message: 'bad json' },
+      },
+    ];
+
+    const result = parseJsonlReports(chunks.map((chunk) => renderJsonlChunkLine(chunk)).join(''));
+
+    expect(result.reports[0]!.failedExtractions).toBe(1);
+    expect(result.reports[0]!.hunkFailures).toHaveLength(1);
+    expect(result.reports[0]!.hunkFailures![0]!.message).toBe('bad json');
+  });
+
+  it('does not count error chunks without error details as hunk failures', () => {
+    const run = buildRunMetadata({ runId: 'chunk-error-no-detail', durationMs: 100 });
+    const chunks: JsonlChunkRecord[] = [
+      {
+        schemaVersion: 1,
+        run,
+        skill: 'security-review',
+        chunk: { file: 'src/api.ts', index: 1, total: 1, lineRange: '10-20' },
+        status: 'error',
+        findings: [],
+        durationMs: 100,
+      },
+    ];
+
+    const result = parseJsonlReports(chunks.map((chunk) => renderJsonlChunkLine(chunk)).join(''));
+
+    expect(result.reports[0]!.failedHunks).toBeUndefined();
+    expect(result.reports[0]!.hunkFailures).toBeUndefined();
+  });
+
+  it('fails chunk content rendering instead of dropping invalid records', () => {
+    const run = buildRunMetadata({ runId: 'strict-chunk-render', durationMs: 300 });
+    const valid: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'security-review',
+      chunk: { file: 'src/api.ts', index: 1, total: 2, lineRange: '10-20' },
+      status: 'ok',
+      findings: [],
+      durationMs: 100,
+    };
+    const invalid = {
+      ...valid,
+      chunk: { file: 'src/api.ts', index: 0, total: 2, lineRange: '21-30' },
+    } as JsonlChunkRecord;
+
+    expect(() => renderJsonlChunkRecords([valid, invalid])).toThrow();
+  });
+
+  it('reconstructs run-level failures from synthetic chunk records', () => {
+    const run = buildRunMetadata({ runId: 'run-error', durationMs: 120 });
+    const chunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'run',
+      chunk: { file: '', index: 1, total: 1, lineRange: '' },
+      status: 'error',
+      findings: [],
+      durationMs: 120,
+      error: { code: 'auth_failed', message: 'bad key' },
+    };
+
+    const result = parseJsonlReports(renderJsonlChunkLine(chunk));
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]!.skill).toBe('run');
+    expect(result.reports[0]!.error?.code).toBe('auth_failed');
+    expect(result.reports[0]!.failedHunks).toBeUndefined();
+    expect(result.totalDurationMs).toBe(120);
+  });
+
+  it('reconstructs skipped-file reports from synthetic chunk records', () => {
+    const run = buildRunMetadata({
+      runId: 'skipped-123',
+      durationMs: 50,
+      timestamp: new Date('2026-02-18T14:32:15.123Z'),
+      cwd: '/test',
+    });
+    const chunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'generated-review',
+      chunk: { file: 'dist/bundle.js', index: 1, total: 1, lineRange: '' },
+      status: 'skipped',
+      findings: [],
+      durationMs: 50,
+      skippedFiles: [{ filename: 'dist/bundle.js', reason: 'builtin' }],
+    };
+
+    const result = parseJsonlReports(renderJsonlChunkLine(chunk));
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]!.skill).toBe('generated-review');
+    expect(result.reports[0]!.findings).toEqual([]);
+    expect(result.reports[0]!.skippedFiles).toEqual([{ filename: 'dist/bundle.js', reason: 'builtin' }]);
   });
 
   it('skips invalid lines gracefully', () => {
@@ -988,6 +1246,7 @@ describe('specs/jsonl-examples.jsonl', () => {
     fileURLToPath(new URL('../../../specs/jsonl-examples.jsonl', import.meta.url)),
   );
   const union = z.union([
+    JsonlChunkRecordSchema,
     JsonlRecordSchema,
     JsonlSummaryRecordSchema,
     JsonlFixEvaluationRecordSchema,

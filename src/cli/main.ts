@@ -1,12 +1,14 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { config as dotenvConfig } from 'dotenv';
 import { Sentry, flushSentry, setGlobalAttributes, emitRunMetric, getTraceId } from '../sentry.js';
 import { loadWardenConfig, resolveSkillConfigs } from '../config/loader.js';
-import { verifyAuth, type WardenAuthenticationError, type SkillRunnerOptions } from '../sdk/runner.js';
+import { verifyAuth, type WardenAuthenticationError, type SkillRunnerOptions, type ChunkAnalysisResult } from '../sdk/runner.js';
+import { mapExtractionErrorCode } from '../sdk/errors.js';
+import { mergeAuxiliaryUsage } from '../sdk/usage.js';
 import { resolveSkillAsync } from '../skills/loader.js';
 import { matchTrigger, filterContextByPaths, shouldFail, countFindingsAtOrAbove } from '../triggers/matcher.js';
-import type { SkillReport, ConfidenceThreshold, SkillError } from '../types/index.js';
+import type { SkillReport, ConfidenceThreshold, SkillError, Finding } from '../types/index.js';
 import { filterFindings } from '../types/index.js';
 import { DEFAULT_CONCURRENCY, getAnthropicApiKey } from '../utils/index.js';
 import { parseCliArgs, showHelp, showVersion, classifyTargets, type CLIOptions } from './args.js';
@@ -24,12 +26,13 @@ import {
   MODEL_DEFAULT_SENTINEL,
   writeJsonlContent,
   renderJsonlString,
-  renderJsonlSkillLine,
-  renderJsonlSummaryLine,
+  renderJsonlChunkLine,
+  renderJsonlChunkRecords,
   initJsonlFile,
   appendJsonlLine,
   getRepoLogPath,
   generateRunId,
+  type JsonlChunkRecord,
   type JsonlRunMetadata,
   type SkillTaskOptions,
 } from './output/index.js';
@@ -163,6 +166,7 @@ interface RunLog {
   outputPath: string | undefined;
   startTime: number;
   baseRun: Omit<JsonlRunMetadata, 'durationMs'>;
+  chunks: JsonlChunkRecord[];
 }
 
 function initializeRunLog(args: {
@@ -207,25 +211,213 @@ function initializeRunLog(args: {
   }
 
   const paths: string[] = [];
-  if (primaryLogWritten) paths.push(primaryLogPath);
-  if (resolvedOutputPath) paths.push(resolvedOutputPath);
+  const seenPaths = new Set<string>();
+  const addPath = (path: string): void => {
+    const key = resolve(process.cwd(), path);
+    if (seenPaths.has(key)) return;
+    seenPaths.add(key);
+    paths.push(path);
+  };
+  if (primaryLogWritten) addPath(primaryLogPath);
+  if (resolvedOutputPath) addPath(resolvedOutputPath);
 
-  return { paths, primaryLogPath, primaryLogWritten, outputPath: resolvedOutputPath, startTime, baseRun };
+  return { paths, primaryLogPath, primaryLogWritten, outputPath: resolvedOutputPath, startTime, baseRun, chunks: [] };
 }
 
-function appendSkillToRunLog(log: RunLog, report: SkillReport): void {
+function appendChunkToRunLog(log: RunLog, skillName: string, chunk: ChunkAnalysisResult): void {
   if (log.paths.length === 0) return;
-  const run: JsonlRunMetadata = { ...log.baseRun, durationMs: Date.now() - log.startTime };
-  const line = renderJsonlSkillLine(report, run);
+  const auxiliaryUsage = chunk.auxiliaryUsage?.reduce(
+    (acc, entry) => mergeAuxiliaryUsage(acc, { [entry.agent]: entry.usage }),
+    undefined as JsonlChunkRecord['auxiliaryUsage'],
+  );
+  const error: SkillError | undefined = chunk.failed
+    ? {
+        code: chunk.failureCode ?? 'unknown',
+        message: chunk.failureMessage ?? 'unknown error',
+        timestamp: new Date().toISOString(),
+      }
+    : chunk.extractionFailed
+      ? {
+          code: mapExtractionErrorCode(chunk.extractionError),
+          message: chunk.extractionError ?? 'unknown extraction error',
+          timestamp: new Date().toISOString(),
+        }
+      : undefined;
+  const record: JsonlChunkRecord = {
+    schemaVersion: 1,
+    run: { ...log.baseRun, durationMs: Date.now() - log.startTime },
+    skill: skillName,
+    model: chunk.model,
+    chunk: {
+      file: chunk.filename,
+      index: chunk.index,
+      total: chunk.total,
+      lineRange: chunk.lineRange,
+    },
+    status: error ? 'error' : 'ok',
+    findings: chunk.findings,
+    usage: chunk.usage,
+    durationMs: chunk.durationMs,
+    auxiliaryUsage,
+    error,
+  };
+  let line: string;
+  try {
+    line = renderJsonlChunkLine(record);
+  } catch {
+    return;
+  }
+  log.chunks.push(record);
   for (const p of log.paths) {
     try { appendJsonlLine(p, line); } catch { /* best-effort */ }
   }
 }
 
+function buildReportChunkRecord(
+  log: RunLog,
+  report: SkillReport,
+  runDurationMs: number,
+  index = 1,
+  total = 1,
+  error?: SkillError,
+): JsonlChunkRecord {
+  const reportError = report.error ?? error;
+  return {
+    schemaVersion: 1,
+    run: { ...log.baseRun, durationMs: runDurationMs },
+    skill: report.skill,
+    model: report.model,
+    chunk: {
+      file: report.skippedFiles?.[0]?.filename ?? '',
+      index,
+      total,
+      lineRange: '',
+    },
+    status: reportError ? 'error' : report.skippedFiles?.length ? 'skipped' : 'ok',
+    findings: report.findings,
+    usage: report.usage,
+    durationMs: report.durationMs ?? runDurationMs,
+    auxiliaryUsage: report.auxiliaryUsage,
+    error: reportError,
+    skippedFiles: report.skippedFiles,
+  };
+}
+
+function buildRunErrorChunkRecord(
+  log: RunLog,
+  runDurationMs: number,
+  error: SkillError,
+): JsonlChunkRecord {
+  return {
+    schemaVersion: 1,
+    run: { ...log.baseRun, durationMs: runDurationMs },
+    skill: 'run',
+    chunk: {
+      file: '',
+      index: 1,
+      total: 1,
+      lineRange: '',
+    },
+    status: 'error',
+    findings: [],
+    durationMs: runDurationMs,
+    error,
+  };
+}
+
+function hasReportRecord(log: RunLog, report: SkillReport): boolean {
+  return log.chunks.some((chunk) => {
+    if (chunk.skill !== report.skill) return false;
+    if (report.error) {
+      return chunk.error?.code === report.error.code && chunk.error.message === report.error.message;
+    }
+    if (report.skippedFiles?.length) {
+      return (chunk.skippedFiles?.length ?? 0) > 0;
+    }
+    return true;
+  });
+}
+
+function shouldStreamReportRecord(log: RunLog, report: SkillReport): boolean {
+  if (hasReportRecord(log, report)) return false;
+  return Boolean(report.error || report.skippedFiles?.length || !log.chunks.some((chunk) => chunk.skill === report.skill));
+}
+
+function appendReportToRunLog(log: RunLog, report: SkillReport): void {
+  if (!shouldStreamReportRecord(log, report)) return;
+  const record = buildReportChunkRecord(log, report, Date.now() - log.startTime);
+  let line: string;
+  try {
+    line = renderJsonlChunkLine(record);
+  } catch {
+    return;
+  }
+  log.chunks.push(record);
+  for (const p of log.paths) {
+    try { appendJsonlLine(p, line); } catch { /* best-effort */ }
+  }
+}
+
+function lineRangeIncludes(lineRange: string, line: number): boolean {
+  if (!lineRange) return false;
+  const [startText, endText] = lineRange.split('-');
+  const start = Number(startText);
+  const end = endText ? Number(endText) : start;
+  return Number.isFinite(start) && Number.isFinite(end) && line >= start && line <= end;
+}
+
+function findChunkForFinding(chunks: JsonlChunkRecord[], skill: string, finding: Finding): JsonlChunkRecord | undefined {
+  const sameSkill = chunks.filter((chunk) => chunk.skill === skill && chunk.chunk.file);
+  const location = finding.location;
+  if (!location) return sameSkill[0];
+  return sameSkill.find((chunk) =>
+    chunk.chunk.file === location.path && lineRangeIncludes(chunk.chunk.lineRange, location.startLine)
+  ) ?? sameSkill.find((chunk) => chunk.chunk.file === location.path) ?? sameSkill[0];
+}
+
+function buildFinalChunkRecords(
+  log: RunLog,
+  reports: SkillReport[],
+  totalDurationMs: number,
+  error?: SkillError,
+): JsonlChunkRecord[] {
+  const finalRun: JsonlRunMetadata = { ...log.baseRun, durationMs: totalDurationMs };
+  if (log.chunks.length === 0) {
+    if (reports.length === 0 && error) {
+      return [buildRunErrorChunkRecord(log, totalDurationMs, error)];
+    }
+    return reports.map((report) => buildReportChunkRecord(log, report, totalDurationMs, undefined, undefined, error));
+  }
+
+  const findingsByChunk = new Map<JsonlChunkRecord, Finding[]>();
+  for (const report of reports) {
+    for (const finding of report.findings) {
+      const chunk = findChunkForFinding(log.chunks, report.skill, finding);
+      if (!chunk) continue;
+      const findings = findingsByChunk.get(chunk) ?? [];
+      findings.push(finding);
+      findingsByChunk.set(chunk, findings);
+    }
+  }
+
+  const chunkRecords = log.chunks.map((chunk) => ({
+    ...chunk,
+    run: { ...finalRun },
+    findings: findingsByChunk.get(chunk) ?? [],
+  }));
+
+  const finalLog = { ...log, chunks: chunkRecords };
+  const missingReports = reports.filter((report) => shouldStreamReportRecord(finalLog, report));
+  return [
+    ...chunkRecords,
+    ...missingReports.map((report) => buildReportChunkRecord(log, report, totalDurationMs, undefined, undefined, error)),
+  ];
+}
+
 /**
- * Append the run-final summary record. Returns the set of paths that
+ * Rewrite the run log with final chunk records. Returns the set of paths that
  * accepted the write, so the caller can decide whether to claim
- * "wrote JSONL output to X" (only true when the summary actually landed).
+ * "wrote JSONL output to X" (only true when the final log actually landed).
  */
 function finalizeRunLog(
   log: RunLog,
@@ -235,13 +427,28 @@ function finalizeRunLog(
 ): Set<string> {
   const wrote = new Set<string>();
   if (log.paths.length === 0) return wrote;
-  const run: JsonlRunMetadata = { ...log.baseRun, durationMs: totalDurationMs };
-  const line = renderJsonlSummaryLine(reports, run, error);
+  let content: string;
+  try {
+    const records = buildFinalChunkRecords(log, reports, totalDurationMs, error);
+    content = renderJsonlChunkRecords(records);
+  } catch {
+    return wrote;
+  }
   for (const p of log.paths) {
+    const targetPath = resolve(process.cwd(), p);
+    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    const tempDonePath = `${tempPath}.done`;
     try {
-      appendJsonlLine(p, line);
+      writeJsonlContent(tempPath, content);
+      writeFileSync(tempDonePath, '');
+      renameSync(tempPath, targetPath);
+      renameSync(tempDonePath, `${targetPath}.done`);
       wrote.add(p);
-    } catch { /* best-effort */ }
+    } catch {
+      try { unlinkSync(tempPath); } catch { /* ignore */ }
+      try { unlinkSync(tempDonePath); } catch { /* ignore */ }
+      // best-effort
+    }
   }
   return wrote;
 }
@@ -344,21 +551,18 @@ async function outputResultsAndHandleFixes(
     // Prefer reading the on-disk log (per-skill durationMs is a snapshot).
     // Only read it back if finalize actually landed the summary there;
     // a half-written file should fall through to the in-memory render.
-    // The fallback uses the run total for every record — structurally
-    // valid but not byte-identical to the file.
+    // The fallback renders the same chunk-record shape in memory.
     let jsonlContent: string | undefined;
     if (finalizedPaths.has(runLog.primaryLogPath)) {
       try { jsonlContent = readFileSync(runLog.primaryLogPath, 'utf-8'); } catch { /* fall through */ }
     }
     if (!jsonlContent) {
-      jsonlContent = renderJsonlString(reports, totalDuration, {
-        runId: runLog.baseRun.runId,
-        traceId,
-        timestamp: new Date(runLog.baseRun.timestamp),
-        model: runLog.baseRun.model,
-        headSha: runLog.baseRun.headSha,
-        cwd: runLog.baseRun.cwd,
-      });
+      try {
+        jsonlContent = renderJsonlChunkRecords(buildFinalChunkRecords(runLog, reports, totalDuration));
+      } catch (err) {
+        reporter.error(`Failed to render JSONL output: ${err instanceof Error ? err.message : String(err)}`);
+        return 1;
+      }
     }
     process.stdout.write(jsonlContent);
   } else {
@@ -564,7 +768,8 @@ async function runSkills(
     verbosity: reporter.verbosity,
     concurrency,
     failFastController,
-    onSkillComplete: (report: SkillReport) => appendSkillToRunLog(runLog, report),
+    onChunkComplete: (skillName: string, chunk: ChunkAnalysisResult) => appendChunkToRunLog(runLog, skillName, chunk),
+    onSkillComplete: (report: SkillReport) => appendReportToRunLog(runLog, report),
   };
   const results = reporter.mode.isTTY
     ? await runSkillTasksWithInk(tasks, taskOptions)
@@ -873,7 +1078,8 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
     verbosity: reporter.verbosity,
     concurrency,
     failFastController,
-    onSkillComplete: (report: SkillReport) => appendSkillToRunLog(runLog, report),
+    onChunkComplete: (skillName: string, chunk: ChunkAnalysisResult) => appendChunkToRunLog(runLog, skillName, chunk),
+    onSkillComplete: (report: SkillReport) => appendReportToRunLog(runLog, report),
   };
   const results = reporter.mode.isTTY
     ? await runSkillTasksWithInk(tasks, taskOptions)

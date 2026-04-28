@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { renderJsonlString } from '../output/jsonl.js';
@@ -14,8 +14,10 @@ import {
   appendJsonlLine,
   buildRunMetadata,
   initJsonlFile,
+  renderJsonlChunkLine,
   renderJsonlSkillLine,
   renderJsonlSummaryLine,
+  type JsonlChunkRecord,
 } from '../output/jsonl.js';
 import { Reporter, parseVerbosity } from '../output/index.js';
 import type { CLIOptions } from '../args.js';
@@ -671,20 +673,36 @@ describe('runRunsFollow', () => {
       new Date('2026-04-25T13:00:00.000Z'),
     );
 
+    const olderPath = join(logDir, 'zzzzzzzz-2026-04-25T13-30-00-000Z.jsonl');
+    const olderRun = buildRunMetadata({
+      runId: 'zzzzzzzz-0000-0000-0000-000000000000',
+      durationMs: 0,
+      timestamp: new Date('2026-04-25T13:30:00.000Z'),
+    });
+    initJsonlFile(olderPath);
+    appendJsonlLine(
+      olderPath,
+      renderJsonlSkillLine({ skill: 'older-live', summary: 'ok', findings: [], durationMs: 50 }, olderRun),
+    );
+
     // Newer in-progress session (skill records but no summary yet).
-    const newerPath = join(logDir, 'inprog00-2026-04-25T14-00-00-000Z.jsonl');
+    const newerPath = join(logDir, 'aaaaaaaa-2026-04-25T14-00-00-000Z.jsonl');
     const run = buildRunMetadata({
-      runId: 'inprog00-0000-0000-0000-000000000000',
+      runId: 'aaaaaaaa-0000-0000-0000-000000000000',
       durationMs: 0,
       timestamp: new Date('2026-04-25T14:00:00.000Z'),
     });
     initJsonlFile(newerPath);
     appendJsonlLine(
       newerPath,
-      renderJsonlSkillLine({ skill: 'live', summary: 'ok', findings: [], durationMs: 50 }, run),
+      renderJsonlSkillLine({ skill: 'newer-live', summary: 'ok', findings: [], durationMs: 50 }, run),
     );
 
     vi.spyOn(await import('../git.js'), 'getRepoRoot').mockReturnValue(testDir);
+    const writes: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((chunk = '') => {
+      writes.push(String(chunk));
+    });
 
     const reporter = createTestReporter();
     const followPromise = runRunsFollow(
@@ -695,10 +713,14 @@ describe('runRunsFollow', () => {
 
     // Wait for the watcher to attach, then append a summary so it stops.
     await new Promise((r) => setTimeout(r, 50));
+    appendJsonlLine(olderPath, renderJsonlSummaryLine([], olderRun));
     appendJsonlLine(newerPath, renderJsonlSummaryLine([], run));
 
     const exit = await followPromise;
     expect(exit).toBe(0);
+    expect(writes.join('\n')).toContain('newer-live');
+    expect(writes.join('\n')).not.toContain('older-live');
+    logSpy.mockRestore();
   }, 5000);
 
   it('with --json, passes through raw JSONL lines verbatim and exits on summary', async () => {
@@ -745,4 +767,323 @@ describe('runRunsFollow', () => {
 
     stdoutSpy.mockRestore();
   });
+
+  it('renders chunk findings while the run is still active and exits on done marker', async () => {
+    const logDir = join(testDir, '.warden', 'logs');
+    const livePath = join(logDir, 'chunkrun-2026-04-25T16-00-00-000Z.jsonl');
+    const run = buildRunMetadata({
+      runId: 'chunkrun-0000-0000-0000-000000000000',
+      durationMs: 0,
+      timestamp: new Date('2026-04-25T16:00:00.000Z'),
+    });
+    const chunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'live-skill',
+      chunk: { file: 'src/a.ts', index: 1, total: 2, lineRange: '10-20' },
+      status: 'ok',
+      findings: [{
+        id: 'FIND-1',
+        severity: 'high',
+        title: 'Escaped finding',
+        description: 'This should render before the run is complete.',
+        location: { path: 'src/a.ts', startLine: 12 },
+      }],
+      usage: { inputTokens: 100, outputTokens: 20, costUSD: 0.001 },
+      durationMs: 250,
+    };
+
+    initJsonlFile(livePath);
+    vi.spyOn(await import('../git.js'), 'getRepoRoot').mockReturnValue(testDir);
+
+    const writes: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((chunk = '') => {
+      writes.push(String(chunk));
+    });
+
+    const reporter = createTestReporter();
+    const followPromise = runRunsFollow(
+      { subcommand: 'follow', files: [] },
+      createDefaultOptions(),
+      reporter,
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    appendJsonlLine(livePath, renderJsonlChunkLine(chunk));
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(`${livePath}.done`, '');
+
+    const exit = await followPromise;
+    expect(exit).toBe(0);
+    expect(writes.join('\n')).toContain('Escaped finding');
+
+    logSpy.mockRestore();
+  }, 5000);
+
+  it('follows an explicit completed chunk log', async () => {
+    const logDir = join(testDir, '.warden', 'logs');
+    const livePath = join(logDir, 'donechunk-2026-04-25T16-00-00-000Z.jsonl');
+    const run = buildRunMetadata({
+      runId: 'donechunk-0000-0000-0000-000000000000',
+      durationMs: 250,
+      timestamp: new Date('2026-04-25T16:00:00.000Z'),
+    });
+    const chunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'done-skill',
+      chunk: { file: 'src/a.ts', index: 1, total: 1, lineRange: '10-20' },
+      status: 'ok',
+      findings: [{ id: 'DONE-1', severity: 'high', title: 'Done finding', description: 'done' }],
+      durationMs: 250,
+    };
+
+    initJsonlFile(livePath);
+    appendJsonlLine(livePath, renderJsonlChunkLine(chunk));
+    writeFileSync(`${livePath}.done`, '');
+    vi.spyOn(await import('../git.js'), 'getRepoRoot').mockReturnValue(testDir);
+
+    const writes: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((chunk = '') => {
+      writes.push(String(chunk));
+    });
+
+    const exit = await runRunsFollow(
+      { subcommand: 'follow', files: ['donechunk'] },
+      createDefaultOptions(),
+      createTestReporter(),
+    );
+
+    expect(exit).toBe(0);
+    expect(writes.join('\n')).toContain('Done finding');
+
+    logSpy.mockRestore();
+  }, 5000);
+
+  it('does not read from the middle of a finalized replacement file', async () => {
+    const logDir = join(testDir, '.warden', 'logs');
+    const livePath = join(logDir, 'replace0-2026-04-25T16-00-00-000Z.jsonl');
+    const run = buildRunMetadata({
+      runId: 'replace0',
+      durationMs: 100,
+      timestamp: new Date('2026-04-25T16:00:00.000Z'),
+      cwd: testDir,
+    });
+    const chunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'live-skill',
+      chunk: { file: 'src/a.ts', index: 1, total: 1, lineRange: '10-20' },
+      status: 'ok',
+      findings: [{
+        id: 'FIND-1',
+        severity: 'high',
+        title: 'Live finding',
+        description: 'This should render once.',
+      }],
+      durationMs: 100,
+    };
+
+    initJsonlFile(livePath);
+    vi.spyOn(await import('../git.js'), 'getRepoRoot').mockReturnValue(testDir);
+
+    const writes: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((chunk = '') => {
+      writes.push(String(chunk));
+    });
+    const warningSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const reporter = createTestReporter();
+    const followPromise = runRunsFollow(
+      { subcommand: 'follow', files: [] },
+      createDefaultOptions(),
+      reporter,
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    appendJsonlLine(livePath, renderJsonlChunkLine(chunk));
+    await new Promise((r) => setTimeout(r, 50));
+    const finalPath = `${livePath}.tmp`;
+    writeFileSync(finalPath, renderJsonlChunkLine({
+      ...chunk,
+      findings: [],
+      run: { ...run, durationMs: 250 },
+    }));
+    renameSync(finalPath, livePath);
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(`${livePath}.done`, '');
+
+    const exit = await followPromise;
+    const output = writes.join('\n');
+    expect(exit).toBe(0);
+    expect(output).toContain('Live finding');
+    expect(output.match(/Live finding/g)).toHaveLength(1);
+    expect(warningSpy).not.toHaveBeenCalledWith(expect.stringContaining('Skipping unrecognized record'));
+
+    logSpy.mockRestore();
+    warningSpy.mockRestore();
+  }, 5000);
+
+  it('reads a finalized replacement file when no live bytes were consumed', async () => {
+    const logDir = join(testDir, '.warden', 'logs');
+    const livePath = join(logDir, 'replace1-2026-04-25T16-00-00-000Z.jsonl');
+    const run = buildRunMetadata({
+      runId: 'replace1',
+      durationMs: 100,
+      timestamp: new Date('2026-04-25T16:00:00.000Z'),
+      cwd: testDir,
+    });
+    const chunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'final-skill',
+      chunk: { file: 'src/a.ts', index: 1, total: 1, lineRange: '10-20' },
+      status: 'ok',
+      findings: [{
+        id: 'FIND-2',
+        severity: 'high',
+        title: 'Final finding',
+        description: 'This should render from the replacement file.',
+      }],
+      durationMs: 100,
+    };
+
+    initJsonlFile(livePath);
+    vi.spyOn(await import('../git.js'), 'getRepoRoot').mockReturnValue(testDir);
+
+    const writes: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((chunk = '') => {
+      writes.push(String(chunk));
+    });
+
+    const reporter = createTestReporter();
+    const followPromise = runRunsFollow(
+      { subcommand: 'follow', files: [] },
+      createDefaultOptions(),
+      reporter,
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    const finalPath = `${livePath}.tmp`;
+    writeFileSync(finalPath, renderJsonlChunkLine(chunk));
+    renameSync(finalPath, livePath);
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(`${livePath}.done`, '');
+
+    const exit = await followPromise;
+    expect(exit).toBe(0);
+    expect(writes.join('\n')).toContain('Final finding');
+
+    logSpy.mockRestore();
+  }, 5000);
+
+  it('with --json, emits finalized replacement records after live records', async () => {
+    const logDir = join(testDir, '.warden', 'logs');
+    const livePath = join(logDir, 'jsonlive-2026-04-25T16-00-00-000Z.jsonl');
+    const run = buildRunMetadata({
+      runId: 'jsonlive',
+      durationMs: 100,
+      timestamp: new Date('2026-04-25T16:00:00.000Z'),
+      cwd: testDir,
+    });
+    const liveChunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'json-skill',
+      chunk: { file: 'src/a.ts', index: 1, total: 1, lineRange: '10-20' },
+      status: 'ok',
+      findings: [{ id: 'RAW', severity: 'high', title: 'Raw finding', description: 'raw' }],
+      durationMs: 100,
+    };
+    const finalChunk: JsonlChunkRecord = {
+      ...liveChunk,
+      findings: [{ id: 'FINAL', severity: 'high', title: 'Final finding', description: 'final' }],
+    };
+
+    initJsonlFile(livePath);
+    vi.spyOn(await import('../git.js'), 'getRepoRoot').mockReturnValue(testDir);
+
+    const writes: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+      return true;
+    });
+
+    const reporter = createTestReporter();
+    const followPromise = runRunsFollow(
+      { subcommand: 'follow', files: [] },
+      { ...createDefaultOptions(), json: true },
+      reporter,
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    appendJsonlLine(livePath, renderJsonlChunkLine(liveChunk));
+    await new Promise((r) => setTimeout(r, 50));
+    const finalPath = `${livePath}.tmp`;
+    writeFileSync(finalPath, renderJsonlChunkLine(finalChunk));
+    renameSync(finalPath, livePath);
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(`${livePath}.done`, '');
+
+    const exit = await followPromise;
+    const output = writes.join('');
+    expect(exit).toBe(0);
+    expect(output).toContain('Raw finding');
+    expect(output).toContain('Final finding');
+
+    stdoutSpy.mockRestore();
+  }, 5000);
+
+  it('with --json, does not re-emit unchanged replacement records', async () => {
+    const logDir = join(testDir, '.warden', 'logs');
+    const livePath = join(logDir, 'jsondedupe-2026-04-25T16-00-00-000Z.jsonl');
+    const run = buildRunMetadata({
+      runId: 'jsondedupe',
+      durationMs: 100,
+      timestamp: new Date('2026-04-25T16:00:00.000Z'),
+      cwd: testDir,
+    });
+    const chunk: JsonlChunkRecord = {
+      schemaVersion: 1,
+      run,
+      skill: 'json-skill',
+      chunk: { file: 'src/a.ts', index: 1, total: 1, lineRange: '10-20' },
+      status: 'ok',
+      findings: [{ id: 'SAME', severity: 'high', title: 'Same finding', description: 'same' }],
+      durationMs: 100,
+    };
+
+    initJsonlFile(livePath);
+    vi.spyOn(await import('../git.js'), 'getRepoRoot').mockReturnValue(testDir);
+
+    const writes: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+      return true;
+    });
+
+    const reporter = createTestReporter();
+    const followPromise = runRunsFollow(
+      { subcommand: 'follow', files: [] },
+      { ...createDefaultOptions(), json: true },
+      reporter,
+    );
+
+    const line = renderJsonlChunkLine(chunk);
+    await new Promise((r) => setTimeout(r, 50));
+    appendJsonlLine(livePath, line);
+    await new Promise((r) => setTimeout(r, 50));
+    const finalPath = `${livePath}.tmp`;
+    writeFileSync(finalPath, line);
+    renameSync(finalPath, livePath);
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(`${livePath}.done`, '');
+
+    const exit = await followPromise;
+    const output = writes.join('');
+    expect(exit).toBe(0);
+    expect(output.match(/Same finding/g)).toHaveLength(1);
+
+    stdoutSpy.mockRestore();
+  }, 5000);
 });

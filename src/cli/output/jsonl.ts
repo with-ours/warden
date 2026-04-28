@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -6,11 +6,14 @@ import {
   UsageStatsSchema,
   SkillReportSchema,
   FileReportSchema,
+  FindingSchema,
   AuxiliaryUsageMapSchema,
   FixStatusSchema,
+  isExtractionErrorCode,
   SkillErrorSchema,
+  SkippedFileSchema,
 } from '../../types/index.js';
-import type { SkillReport, UsageStats, AuxiliaryUsageMap, SkillError } from '../../types/index.js';
+import type { SkillReport, UsageStats, AuxiliaryUsageMap, SkillError, Finding, FileReport, HunkFailure } from '../../types/index.js';
 import { mergeAuxiliaryUsage } from '../../sdk/usage.js';
 import { logger } from '../../sentry.js';
 import { countBySeverity } from './formatters.js';
@@ -76,6 +79,28 @@ export type JsonlRunMetadata = z.infer<typeof JsonlRunMetadataSchema>;
 /** Per-file breakdown within a skill record (re-exported from shared types). */
 export const JsonlFileRecordSchema = FileReportSchema;
 export type JsonlFileRecord = z.infer<typeof JsonlFileRecordSchema>;
+
+/** Unit of work scanned by Warden. New run logs contain only this record type. */
+export const JsonlChunkRecordSchema = z.object({
+  schemaVersion: z.literal(1),
+  run: JsonlRunMetadataSchema,
+  skill: z.string(),
+  model: z.string().optional(),
+  chunk: z.object({
+    file: z.string(),
+    index: z.number().int().positive(),
+    total: z.number().int().positive(),
+    lineRange: z.string(),
+  }),
+  status: z.enum(['ok', 'error', 'skipped']),
+  findings: z.array(FindingSchema),
+  usage: UsageStatsSchema.optional(),
+  durationMs: z.number().nonnegative(),
+  auxiliaryUsage: AuxiliaryUsageMapSchema.optional(),
+  error: SkillErrorSchema.optional(),
+  skippedFiles: z.array(SkippedFileSchema).optional(),
+});
+export type JsonlChunkRecord = z.infer<typeof JsonlChunkRecordSchema>;
 
 /**
  * One skill's analysis results. This is the shared SkillReport plus a `run`
@@ -260,6 +285,15 @@ export function renderJsonlSummaryLine(
   return JSON.stringify(buildSummaryJsonlRecord(reports, run, error)) + '\n';
 }
 
+/** Render one chunk result record as one JSONL line. */
+export function renderJsonlChunkLine(record: JsonlChunkRecord): string {
+  return JSON.stringify(JsonlChunkRecordSchema.parse(record)) + '\n';
+}
+
+export function renderJsonlChunkRecords(records: JsonlChunkRecord[]): string {
+  return records.map((record) => renderJsonlChunkLine(record)).join('');
+}
+
 /** Create parent dirs and truncate the file to empty. */
 export function initJsonlFile(outputPath: string): void {
   const resolvedPath = resolve(process.cwd(), outputPath);
@@ -269,8 +303,8 @@ export function initJsonlFile(outputPath: string): void {
 
 /**
  * Append a pre-rendered line (must include its trailing newline).
- * Atomic w.r.t. other appenders on POSIX for lines under PIPE_BUF, which
- * is what makes parallel skill execution safe to write straight to disk.
+ * This uses one synchronous append call so parallel skill callbacks in this
+ * process cannot interleave partial JSON records.
  */
 export function appendJsonlLine(outputPath: string, line: string): void {
   const resolvedPath = resolve(process.cwd(), outputPath);
@@ -358,15 +392,130 @@ export interface ParsedJsonlLog {
   totalDurationMs: number;
 }
 
+function summarizeFindings(skill: string, findings: Finding[]): string {
+  if (findings.length === 0) return `${skill}: No issues found`;
+  const counts = countBySeverity(findings);
+  const parts = [
+    counts.high ? `${counts.high} high` : undefined,
+    counts.medium ? `${counts.medium} medium` : undefined,
+    counts.low ? `${counts.low} low` : undefined,
+  ].filter(Boolean);
+  return `${skill}: Found ${findings.length} ${findings.length === 1 ? 'issue' : 'issues'} (${parts.join(', ')})`;
+}
+
+function addUsage(a: UsageStats | undefined, b: UsageStats | undefined): UsageStats | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadInputTokens: (a.cacheReadInputTokens ?? 0) + (b.cacheReadInputTokens ?? 0),
+    cacheCreationInputTokens: (a.cacheCreationInputTokens ?? 0) + (b.cacheCreationInputTokens ?? 0),
+    costUSD: a.costUSD + b.costUSD,
+  };
+}
+
+function reportsFromChunks(chunks: JsonlChunkRecord[]): SkillReport[] {
+  const bySkill = new Map<string, JsonlChunkRecord[]>();
+  for (const chunk of chunks) {
+    const records = bySkill.get(chunk.skill) ?? [];
+    records.push(chunk);
+    bySkill.set(chunk.skill, records);
+  }
+
+  const reports: SkillReport[] = [];
+  for (const [skill, records] of bySkill) {
+    const reportLevelError = records.find(isReportLevelErrorRecord)?.error;
+    const chunkRecords = records.filter((record) => !isReportLevelErrorRecord(record));
+    const aggregateRecords = chunkRecords.length > 0 ? chunkRecords : records;
+    const findings = aggregateRecords.flatMap((r) => r.findings);
+    const usage = aggregateRecords.reduce<UsageStats | undefined>((acc, r) => addUsage(acc, r.usage), undefined);
+    const auxiliaryUsage = aggregateRecords.reduce<AuxiliaryUsageMap | undefined>(
+      (acc, r) => mergeAuxiliaryUsage(acc, r.auxiliaryUsage),
+      undefined,
+    );
+    const filesByName = new Map<string, FileReport>();
+    const hunkFailures: HunkFailure[] = [];
+    const skippedFiles = records.flatMap((r) => r.skippedFiles ?? []);
+    for (const record of aggregateRecords) {
+      const existing = filesByName.get(record.chunk.file);
+      if (record.chunk.file) {
+        filesByName.set(record.chunk.file, {
+          filename: record.chunk.file,
+          findings: (existing?.findings ?? 0) + record.findings.length,
+          durationMs: (existing?.durationMs ?? 0) + record.durationMs,
+          usage: addUsage(existing?.usage, record.usage),
+        });
+      }
+      if (record.status === 'error' && record.error && !isReportLevelErrorRecord(record)) {
+        hunkFailures.push({
+          type: isExtractionErrorCode(record.error.code) ? 'extraction' : 'analysis',
+          filename: record.chunk.file,
+          lineRange: record.chunk.lineRange,
+          code: record.error.code,
+          message: record.error.message,
+        });
+      }
+    }
+    const failedHunks = chunkRecords.filter(
+      (r) => r.status === 'error' && r.error && !isExtractionErrorCode(r.error.code),
+    ).length;
+    const failedExtractions = chunkRecords.filter(
+      (r) => r.status === 'error' && r.error && isExtractionErrorCode(r.error.code),
+    ).length;
+    const allChunksFailed =
+      chunkRecords.length > 0 &&
+      findings.length === 0 &&
+      chunkRecords.every((record) => record.status === 'error');
+    const report: SkillReport = {
+      skill,
+      summary: summarizeFindings(skill, findings),
+      findings,
+      durationMs: aggregateRecords.reduce((sum, r) => sum + r.durationMs, 0),
+      usage,
+      files: [...filesByName.values()],
+      model: aggregateRecords.find((r) => r.model)?.model,
+    };
+    if (reportLevelError) {
+      report.error = reportLevelError;
+    } else if (allChunksFailed) {
+      report.error = {
+        code: 'all_hunks_failed',
+        message: `All ${chunkRecords.length} ${chunkRecords.length === 1 ? 'chunk' : 'chunks'} failed to analyze.`,
+      };
+    }
+    if (auxiliaryUsage) report.auxiliaryUsage = auxiliaryUsage;
+    if (failedHunks > 0) report.failedHunks = failedHunks;
+    if (failedExtractions > 0) report.failedExtractions = failedExtractions;
+    if (hunkFailures.length > 0) report.hunkFailures = hunkFailures;
+    if (skippedFiles.length > 0) report.skippedFiles = skippedFiles;
+    reports.push(report);
+  }
+  return reports;
+}
+
+function isReportLevelErrorRecord(record: JsonlChunkRecord): boolean {
+  return record.status === 'error' && record.chunk.file === '' && Boolean(record.error);
+}
+
 export function parseJsonlReports(content: string): ParsedJsonlLog {
   const lines = content.trim().split('\n').filter((line) => line.trim());
   const reports: SkillReport[] = [];
+  const chunks: JsonlChunkRecord[] = [];
   let runMetadata: JsonlRunMetadata | undefined;
   let totalDurationMs = 0;
 
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line);
+
+      const chunk = JsonlChunkRecordSchema.safeParse(parsed);
+      if (chunk.success) {
+        chunks.push(chunk.data);
+        if (!runMetadata) runMetadata = chunk.data.run;
+        totalDurationMs = Math.max(totalDurationMs, chunk.data.run.durationMs);
+        continue;
+      }
 
       // Skip summary record (but capture metadata from it)
       if (parsed.type === 'summary') {
@@ -398,13 +547,13 @@ export function parseJsonlReports(content: string): ParsedJsonlLog {
     }
   }
 
-  return { reports, runMetadata, totalDurationMs };
+  return { reports: [...reports, ...reportsFromChunks(chunks)], runMetadata, totalDurationMs };
 }
 
 /**
  * Lightweight metadata extracted from a JSONL log file. `summary` is
- * absent for in-progress runs (no trailing summary record yet); use
- * `inProgress` to distinguish those from completed runs.
+ * parsed from legacy summary records or synthesized from chunk records;
+ * use `inProgress` to distinguish active runs from completed runs.
  */
 export interface LogFileMetadata {
   summary?: JsonlSummaryRecord;
@@ -438,12 +587,33 @@ export function parseLogMetadata(filePath: string): LogFileMetadata | undefined 
   let model: string | undefined;
   let headSha: string | undefined;
   const uniqueFiles = new Set<string>();
+  const chunks: JsonlChunkRecord[] = [];
   let recognizedRecords = 0;
 
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line);
-      if (parsed.type === 'summary') {
+      const chunk = JsonlChunkRecordSchema.safeParse(parsed);
+      if (chunk.success) {
+        chunks.push(chunk.data);
+        recognizedRecords++;
+        if (!skills.includes(chunk.data.skill)) {
+          skills.push(chunk.data.skill);
+        }
+        if (!model && chunk.data.model) {
+          model = chunk.data.model;
+        }
+        if (!model && chunk.data.run.model) {
+          model = chunk.data.run.model;
+        }
+        if (!headSha && chunk.data.run.headSha) {
+          headSha = chunk.data.run.headSha;
+        }
+        if (!firstRun) firstRun = chunk.data.run;
+        if (chunk.data.chunk.file) {
+          uniqueFiles.add(chunk.data.chunk.file);
+        }
+      } else if (parsed.type === 'summary') {
         summary = JsonlSummaryRecordSchema.parse(parsed);
         recognizedRecords++;
         if (!model && parsed.run?.model && typeof parsed.run.model === 'string') {
@@ -486,10 +656,18 @@ export function parseLogMetadata(filePath: string): LogFileMetadata | undefined 
   // Empty or fully corrupt files (no parseable records) surface as
   // "parse error" in the list, not as in-progress runs.
   if (recognizedRecords === 0 && lines.length > 0) return undefined;
+  if (!summary && chunks.length > 0) {
+    const reports = reportsFromChunks(chunks);
+    const lastDuration = chunks.reduce((max, chunk) => Math.max(max, chunk.run.durationMs), 0);
+    const firstChunk = chunks[0];
+    if (!firstChunk) return undefined;
+    const run = { ...(firstRun ?? firstChunk.run), durationMs: lastDuration };
+    summary = buildSummaryJsonlRecord(reports, run);
+  }
 
   return {
     summary,
-    inProgress: !summary,
+    inProgress: chunks.length > 0 ? !existsSync(`${filePath}.done`) : !summary && !existsSync(`${filePath}.done`),
     runMetadata: summary?.run ?? firstRun,
     skills,
     model,
