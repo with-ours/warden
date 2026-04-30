@@ -2,7 +2,8 @@ import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 
 import { dirname, join, resolve } from 'node:path';
 import { config as dotenvConfig } from 'dotenv';
 import { Sentry, flushSentry, setGlobalAttributes, emitRunMetric, getTraceId } from '../sentry.js';
-import { loadWardenConfig, resolveSkillConfigs } from '../config/loader.js';
+import { emptyToUndefined, loadWardenConfig, resolveSkillConfigs } from '../config/loader.js';
+import type { WardenConfig } from '../config/schema.js';
 import { verifyAuth, type WardenAuthenticationError, type SkillRunnerOptions, type ChunkAnalysisResult } from '../sdk/runner.js';
 import { mapExtractionErrorCode } from '../sdk/errors.js';
 import { mergeAuxiliaryUsage } from '../sdk/usage.js';
@@ -476,6 +477,11 @@ interface SkillToRun {
   skill: string;
   remote?: string;
   filters: { paths?: string[]; ignorePaths?: string[] };
+  model?: string;
+  maxTurns?: number;
+  runtime?: SkillRunnerOptions['runtime'];
+  fastModelModel?: string;
+  auxiliaryMaxRetries?: number;
 }
 
 interface ProcessedResults {
@@ -483,6 +489,53 @@ interface ProcessedResults {
   filteredReports: SkillReport[];
   hasFailure: boolean;
   failureReasons: string[];
+}
+
+type SkillRunnerOptionOverrides = Pick<
+  SkillRunnerOptions,
+  'model' | 'maxTurns' | 'runtime' | 'fastModelModel' | 'auxiliaryMaxRetries'
+>;
+
+export function mergeSkillRunnerOptions(
+  base: SkillRunnerOptions,
+  overrides: SkillRunnerOptionOverrides
+): SkillRunnerOptions {
+  const merged = { ...base };
+
+  if (overrides.model !== undefined) merged.model = overrides.model;
+  if (overrides.maxTurns !== undefined) merged.maxTurns = overrides.maxTurns;
+  if (overrides.runtime !== undefined) merged.runtime = overrides.runtime;
+  if (overrides.fastModelModel !== undefined) merged.fastModelModel = overrides.fastModelModel;
+  if (overrides.auxiliaryMaxRetries !== undefined) {
+    merged.auxiliaryMaxRetries = overrides.auxiliaryMaxRetries;
+  }
+
+  return merged;
+}
+
+export function resolveCliDefaultModel(
+  config: Pick<WardenConfig, 'defaults'> | null | undefined,
+  cliModel?: string
+): string | undefined {
+  return (
+    emptyToUndefined(config?.defaults?.agent?.model) ??
+    emptyToUndefined(config?.defaults?.model) ??
+    emptyToUndefined(cliModel) ??
+    emptyToUndefined(process.env['WARDEN_MODEL'])
+  );
+}
+
+export function resolveCliDefaultFastModel(
+  config: Pick<WardenConfig, 'defaults'> | null | undefined
+): string | undefined {
+  return emptyToUndefined(config?.defaults?.fastModel?.model);
+}
+
+export function resolveCliLogModel(
+  config: Pick<WardenConfig, 'defaults'> | null | undefined,
+  cliModel?: string
+): string {
+  return resolveCliDefaultModel(config, cliModel) ?? MODEL_DEFAULT_SENTINEL;
 }
 
 /**
@@ -634,7 +687,7 @@ async function outputResultsAndHandleFixes(
  * If skillName is provided, runs only that skill.
  * Otherwise, runs skills from matched triggers in warden.toml.
  */
-async function runSkills(
+export async function runSkills(
   context: Awaited<ReturnType<typeof buildLocalEventContext>>,
   options: CLIOptions,
   reporter: Reporter
@@ -682,6 +735,8 @@ async function runSkills(
   const config = configPath && existsSync(configPath)
     ? loadWardenConfig(dirname(configPath))
     : null;
+  const defaultModel = resolveCliDefaultModel(config, options.model);
+  const defaultFastModelModel = resolveCliDefaultFastModel(config);
 
   // Determine which triggers/skills to run
   let skillsToRun: SkillToRun[];
@@ -695,7 +750,16 @@ async function runSkills(
     const fallbackFilters = defaultIgnorePaths?.length
       ? { ignorePaths: defaultIgnorePaths }
       : {};
-    skillsToRun = [{ skill: options.skill, remote: match?.remote, filters: match?.filters ?? fallbackFilters }];
+    skillsToRun = [{
+      skill: options.skill,
+      remote: match?.remote,
+      filters: match?.filters ?? fallbackFilters,
+      model: match?.model ?? defaultModel,
+      maxTurns: match?.maxTurns ?? config?.defaults?.agent?.maxTurns ?? config?.defaults?.maxTurns,
+      runtime: match?.runtime ?? config?.defaults?.runtime ?? 'claude',
+      fastModelModel: match?.fastModelModel ?? defaultFastModelModel,
+      auxiliaryMaxRetries: match?.auxiliaryMaxRetries ?? config?.defaults?.fastModel?.maxRetries ?? config?.defaults?.auxiliaryMaxRetries,
+    }];
   } else if (config) {
     // Get skills from matched triggers, preserving remote property and filters
     const resolvedTriggers = resolveSkillConfigs(config, options.model);
@@ -708,7 +772,16 @@ async function runSkills(
         seen.add(t.skill);
         return true;
       })
-      .map((t) => ({ skill: t.skill, remote: t.remote, filters: t.filters }));
+      .map((t) => ({
+        skill: t.skill,
+        remote: t.remote,
+        filters: t.filters,
+        model: t.model,
+        maxTurns: t.maxTurns,
+        runtime: t.runtime,
+        fastModelModel: t.fastModelModel,
+        auxiliaryMaxRetries: t.auxiliaryMaxRetries,
+      }));
   } else {
     skillsToRun = [];
   }
@@ -728,21 +801,23 @@ async function runSkills(
   }
 
   // Build skill tasks
-  // Model precedence: defaults.model > CLI flag > WARDEN_MODEL env var > SDK default
+  // Model precedence: defaults.agent.model > defaults.model > CLI flag > WARDEN_MODEL env var > SDK default
   // sdkModel is undefined when no model is explicitly configured (lets SDK use its default).
   // logModel records what was used for JSONL logs (sentinel when no explicit model).
-  const sdkModel = config?.defaults?.model ?? options.model ?? process.env['WARDEN_MODEL'];
-  const logModel = sdkModel ?? MODEL_DEFAULT_SENTINEL;
+  const sdkModel = defaultModel;
+  const logModel = resolveCliLogModel(config, options.model);
   const runnerOptions: SkillRunnerOptions = {
     apiKey,
     model: sdkModel,
+    runtime: config?.defaults?.runtime ?? 'claude',
+    fastModelModel: defaultFastModelModel,
     abortController,
-    maxTurns: config?.defaults?.maxTurns,
+    maxTurns: config?.defaults?.agent?.maxTurns ?? config?.defaults?.maxTurns,
     batchDelayMs: config?.defaults?.batchDelayMs,
     maxContextFiles: config?.defaults?.chunking?.maxContextFiles,
-    auxiliaryMaxRetries: config?.defaults?.auxiliaryMaxRetries,
+    auxiliaryMaxRetries: config?.defaults?.fastModel?.maxRetries ?? config?.defaults?.auxiliaryMaxRetries,
   };
-  const tasks: SkillTaskOptions[] = skillsToRun.map(({ skill, remote, filters }) => ({
+  const tasks: SkillTaskOptions[] = skillsToRun.map(({ skill, remote, filters, ...skillOptions }) => ({
     name: skill,
     failOn: options.failOn,
     resolveSkill: () => resolveSkillAsync(skill, repoPath, {
@@ -750,7 +825,7 @@ async function runSkills(
       offline: options.offline,
     }),
     context: filterContextByPaths(context, filters),
-    runnerOptions,
+    runnerOptions: mergeSkillRunnerOptions(runnerOptions, skillOptions),
   }));
 
   // Open the run's JSONL log before launching skills so `warden runs
@@ -1028,7 +1103,6 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
     reporter.debug('No API key found. Using Claude Code subscription auth.');
   }
 
-  // Pre-flight: verify auth will work before starting analysis
   try {
     verifyAuth({ apiKey });
   } catch (error: unknown) {
@@ -1057,10 +1131,12 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
     runnerOptions: {
       apiKey,
       model: trigger.model,
+      runtime: trigger.runtime,
+      fastModelModel: trigger.fastModelModel,
       abortController,
       maxTurns: trigger.maxTurns,
       maxContextFiles: config.defaults?.chunking?.maxContextFiles,
-      auxiliaryMaxRetries: config.defaults?.auxiliaryMaxRetries,
+      auxiliaryMaxRetries: trigger.auxiliaryMaxRetries,
     },
   }));
 
@@ -1069,7 +1145,7 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
   // Skill records are appended on each completion; the trailing summary
   // is appended in `outputResultsAndHandleFixes`.
   // Run-level model is the default (ignoring per-trigger overrides); per-skill models are on each report.
-  const defaultModel = config.defaults?.model ?? options.model ?? process.env['WARDEN_MODEL'] ?? MODEL_DEFAULT_SENTINEL;
+  const defaultModel = resolveCliLogModel(config, options.model);
   const runId = generateRunId();
   const timestamp = new Date();
   const traceId = getTraceId();

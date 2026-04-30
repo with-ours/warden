@@ -1,8 +1,7 @@
-import type Anthropic from '@anthropic-ai/sdk';
 import type { Octokit } from '@octokit/rest';
 import { z } from 'zod';
 import type { ExistingComment } from '../../output/dedup.js';
-import { callHaikuWithTools } from '../../sdk/haiku.js';
+import { getRuntime, type AuxiliaryTool, type RuntimeName } from '../../sdk/runtimes/index.js';
 import { emptyUsage } from '../../sdk/usage.js';
 import { FixJudgeVerdictSchema } from './types.js';
 import type { FixJudgeResult } from './types.js';
@@ -25,11 +24,17 @@ export interface FixJudgeContext {
   patches: Map<string, string>;
 }
 
-const TOOL_DEFINITIONS: Anthropic.Tool[] = [
+export interface FixJudgeRuntimeOptions {
+  runtime?: RuntimeName;
+  model?: string;
+  maxRetries?: number;
+}
+
+const TOOL_DEFINITIONS: AuxiliaryTool[] = [
   {
     name: 'get_file_diff',
     description: 'Get the unified diff showing what changed in a file between the two commits.',
-    input_schema: {
+    inputSchema: {
       type: 'object' as const,
       properties: {
         path: { type: 'string', description: 'File path to get diff for' },
@@ -41,7 +46,7 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: 'get_file_at_commit',
     description:
       'Get file content at a specific commit. Use "before" for pre-fix state, "after" for post-fix state. Optionally specify line range.',
-    input_schema: {
+    inputSchema: {
       type: 'object' as const,
       properties: {
         path: { type: 'string', description: 'File path to fetch' },
@@ -212,8 +217,14 @@ export async function evaluateFix(
   input: FixJudgeInput,
   context: FixJudgeContext,
   apiKey: string,
-  maxRetries?: number
+  runtimeOptionsOrMaxRetries?: number | FixJudgeRuntimeOptions
 ): Promise<FixJudgeResult> {
+  const runtimeOptions: FixJudgeRuntimeOptions =
+    runtimeOptionsOrMaxRetries !== null && typeof runtimeOptionsOrMaxRetries === 'object'
+      ? runtimeOptionsOrMaxRetries
+      : runtimeOptionsOrMaxRetries == null
+        ? {}
+      : { maxRetries: runtimeOptionsOrMaxRetries };
   const fallback: FixJudgeResult = {
     verdict: { status: 'not_attempted', reasoning: 'Evaluation failed' },
     usage: emptyUsage(),
@@ -223,14 +234,16 @@ export async function evaluateFix(
   const prompt = buildPrompt(input);
   const executeTool = createToolExecutor(context);
 
-  const result = await callHaikuWithTools({
+  const result = await getRuntime(runtimeOptions.runtime).runAuxiliary({
+    task: 'fix_evaluation',
     apiKey,
     prompt,
     schema: FixJudgeVerdictSchema,
     tools: TOOL_DEFINITIONS,
     executeTool,
+    model: runtimeOptions.model,
     maxIterations: 5,
-    maxRetries,
+    maxRetries: runtimeOptions.maxRetries,
   });
 
   if (result.success) {

@@ -354,6 +354,19 @@ describe('resolveSkillConfigs', () => {
       expect(resolved?.model).toBe('claude-sonnet-4-20250514');
     });
 
+    it('defaults.agent.model takes precedence over legacy defaults.model', () => {
+      const config: WardenConfig = {
+        ...baseConfig,
+        defaults: {
+          model: 'claude-sonnet-4-20250514',
+          agent: { model: 'pi-agent-model' },
+        },
+      };
+
+      const [resolved] = resolveSkillConfigs(config);
+      expect(resolved?.model).toBe('pi-agent-model');
+    });
+
     it('cliModel is used when no config model is set', () => {
       const [resolved] = resolveSkillConfigs(baseConfig, 'claude-haiku-3-5-20241022');
       expect(resolved?.model).toBe('claude-haiku-3-5-20241022');
@@ -384,6 +397,36 @@ describe('resolveSkillConfigs', () => {
 
       const [resolved] = resolveSkillConfigs(config, 'claude-haiku-3-5-20241022');
       expect(resolved?.model).toBe('claude-haiku-3-5-20241022');
+    });
+  });
+
+  describe('runtime config', () => {
+    it('defaults runtime to Claude', () => {
+      const [resolved] = resolveSkillConfigs(baseConfig);
+
+      expect(resolved?.runtime).toBe('claude');
+      expect(resolved?.fastModelModel).toBeUndefined();
+      expect(resolved?.auxiliaryMaxRetries).toBeUndefined();
+    });
+
+    it('uses one runtime with separate agent and fast-model options', () => {
+      const config: WardenConfig = {
+        ...baseConfig,
+        defaults: {
+          runtime: 'claude',
+          agent: { model: 'claude-main', maxTurns: 12 },
+          fastModel: { model: 'claude-haiku-4-5', maxRetries: 2 },
+          auxiliaryMaxRetries: 5,
+        },
+      };
+
+      const [resolved] = resolveSkillConfigs(config);
+
+      expect(resolved?.runtime).toBe('claude');
+      expect(resolved?.model).toBe('claude-main');
+      expect(resolved?.maxTurns).toBe(12);
+      expect(resolved?.fastModelModel).toBe('claude-haiku-4-5');
+      expect(resolved?.auxiliaryMaxRetries).toBe(2);
     });
   });
 
@@ -656,6 +699,37 @@ describe('resolveLayeredSkillConfigs', () => {
     });
   });
 
+  it('lets repo-defined skills inherit the base runtime when repo defaults omit it', () => {
+    const baseConfig = {
+      version: 1,
+      defaults: {
+        runtime: 'pi',
+      },
+      skills: [{
+        name: 'org-skill',
+        triggers: [{ type: 'pull_request', actions: ['opened'] }],
+      }],
+    } as unknown as WardenConfig;
+
+    const repoConfig: WardenConfig = {
+      version: 1,
+      skills: [{
+        name: 'repo-skill',
+        triggers: [{ type: 'pull_request', actions: ['opened'] }],
+      }],
+    };
+
+    const resolved = resolveLayeredSkillConfigs({
+      config: { version: 1, skills: [] },
+      baseConfig,
+      repoConfig,
+    });
+
+    expect(resolved).toHaveLength(2);
+    expect(resolved[0]?.runtime).toBe('pi');
+    expect(resolved[1]?.runtime).toBe('pi');
+  });
+
   it('uses layer-specific skill roots when both layers define the same skill name', () => {
     const baseConfig: WardenConfig = {
       version: 1,
@@ -714,6 +788,48 @@ describe('loadLayeredWardenConfig', () => {
 });
 
 describe('maxTurns config', () => {
+  it('accepts runtime, agent, and fastModel defaults', () => {
+    const config = {
+      version: 1,
+      defaults: {
+        runtime: 'claude',
+        agent: { model: 'claude-main', maxTurns: 25 },
+        fastModel: { model: 'claude-haiku-4-5', maxRetries: 2 },
+      },
+      skills: [],
+    };
+
+    const result = WardenConfigSchema.safeParse(config);
+    expect(result.success).toBe(true);
+    expect(result.data?.defaults?.runtime).toBe('claude');
+    expect(result.data?.defaults?.fastModel?.model).toBe('claude-haiku-4-5');
+  });
+
+  it('rejects unknown runtimes', () => {
+    const config = {
+      version: 1,
+      defaults: { runtime: 'pi' },
+      skills: [],
+    };
+
+    const result = WardenConfigSchema.safeParse(config);
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects legacy split runtime provider settings', () => {
+    const config = {
+      version: 1,
+      defaults: {
+        agent: { provider: 'pi' },
+        fastModel: { provider: 'claude' },
+      },
+      skills: [],
+    };
+
+    const result = WardenConfigSchema.safeParse(config);
+    expect(result.success).toBe(false);
+  });
+
   it('accepts maxTurns in defaults', () => {
     const config = {
       version: 1,

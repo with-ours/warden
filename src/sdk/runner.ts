@@ -54,6 +54,24 @@ export { prepareFiles } from './prepare.js';
 // Re-export analysis functions
 export { analyzeFile, runSkill, generateSummary } from './analyze.js';
 
+// Re-export runtime registry and adapter contracts
+export {
+  claudeRuntime,
+  getRuntime,
+} from './runtimes/index.js';
+export type { Runtime, RuntimeName } from './runtimes/index.js';
+export type {
+  AuxiliaryRunRequest,
+  AuxiliaryRunResult,
+  AuxiliaryTask,
+  AuxiliaryTool,
+  SkillRunOptions,
+  SkillRunRequest,
+  SkillRunResponse,
+  SkillRunResult,
+  SkillRunStatus,
+} from './runtimes/index.js';
+
 // Re-export types
 export type {
   AuxiliaryUsageEntry,

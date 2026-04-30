@@ -72,6 +72,9 @@ export {
   SkillConfigSchema,
   SkillTriggerSchema,
   TriggerTypeSchema,
+  RuntimeNameSchema,
+  AgentRuntimeConfigSchema,
+  FastModelRuntimeConfigSchema,
   WardenConfigSchema,
   // Functions
   loadWardenConfig,
@@ -85,6 +88,9 @@ export type {
   SkillConfig,
   SkillTrigger,
   TriggerType,
+  RuntimeName,
+  AgentRuntimeConfig,
+  FastModelRuntimeConfig,
   WardenConfig,
   ResolvedTrigger,
 } from './config/index.js';
@@ -92,9 +98,27 @@ export type {
 // -----------------------------------------------------------------------------
 // SDK Runner
 // -----------------------------------------------------------------------------
-export { runSkill, SkillRunnerError } from './sdk/runner.js';
+export {
+  runSkill,
+  SkillRunnerError,
+  getRuntime,
+  claudeRuntime,
+} from './sdk/runner.js';
 
-export type { SkillRunnerOptions, SkillRunnerCallbacks } from './sdk/runner.js';
+export type {
+  SkillRunnerOptions,
+  SkillRunnerCallbacks,
+  Runtime,
+  AuxiliaryRunRequest,
+  AuxiliaryRunResult,
+  AuxiliaryTask,
+  AuxiliaryTool,
+  SkillRunOptions,
+  SkillRunRequest,
+  SkillRunResponse,
+  SkillRunResult,
+  SkillRunStatus,
+} from './sdk/runner.js';
 
 // -----------------------------------------------------------------------------
 // Skills

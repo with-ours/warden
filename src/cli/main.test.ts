@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { processTaskResults } from './main.js';
+import {
+  mergeSkillRunnerOptions,
+  processTaskResults,
+  resolveCliDefaultFastModel,
+  resolveCliDefaultModel,
+  resolveCliLogModel,
+} from './main.js';
+import { MODEL_DEFAULT_SENTINEL } from './output/index.js';
 import type { SkillReport } from '../types/index.js';
 
 function makeReport(overrides: Partial<SkillReport> = {}): SkillReport {
@@ -10,6 +17,118 @@ function makeReport(overrides: Partial<SkillReport> = {}): SkillReport {
     ...overrides,
   };
 }
+
+describe('mergeSkillRunnerOptions', () => {
+  it('preserves global defaults when per-skill options are undefined', () => {
+    const merged = mergeSkillRunnerOptions(
+      {
+        apiKey: 'test-key',
+        model: 'global-agent-model',
+        runtime: 'claude',
+        fastModelModel: 'global-fast-model',
+        maxTurns: 20,
+        auxiliaryMaxRetries: 4,
+      },
+      {
+        model: undefined,
+        runtime: undefined,
+        fastModelModel: undefined,
+        maxTurns: undefined,
+        auxiliaryMaxRetries: undefined,
+      }
+    );
+
+    expect(merged).toEqual({
+      apiKey: 'test-key',
+      model: 'global-agent-model',
+      runtime: 'claude',
+      fastModelModel: 'global-fast-model',
+      maxTurns: 20,
+      auxiliaryMaxRetries: 4,
+    });
+  });
+
+  it('uses defined per-skill options over global defaults', () => {
+    const merged = mergeSkillRunnerOptions(
+      {
+        apiKey: 'test-key',
+        model: 'global-agent-model',
+        runtime: 'claude',
+        fastModelModel: 'global-fast-model',
+        maxTurns: 20,
+        auxiliaryMaxRetries: 4,
+      },
+      {
+        model: 'skill-agent-model',
+        fastModelModel: 'skill-fast-model',
+        maxTurns: 8,
+        auxiliaryMaxRetries: 2,
+      }
+    );
+
+    expect(merged).toEqual({
+      apiKey: 'test-key',
+      model: 'skill-agent-model',
+      runtime: 'claude',
+      fastModelModel: 'skill-fast-model',
+      maxTurns: 8,
+      auxiliaryMaxRetries: 2,
+    });
+  });
+});
+
+describe('resolveCliDefaultModel', () => {
+  it('normalizes empty config defaults before falling through', () => {
+    const model = resolveCliDefaultModel(
+      {
+        defaults: {
+          agent: { model: '' },
+          model: '',
+        },
+      },
+      'cli-model'
+    );
+
+    expect(model).toBe('cli-model');
+  });
+
+  it('normalizes empty fast-model defaults', () => {
+    const model = resolveCliDefaultFastModel({
+      defaults: {
+        fastModel: { model: '' },
+      },
+    });
+
+    expect(model).toBeUndefined();
+  });
+});
+
+describe('resolveCliLogModel', () => {
+  it('normalizes empty config defaults before recording the run model', () => {
+    const model = resolveCliLogModel(
+      {
+        defaults: {
+          agent: { model: '' },
+          model: 'legacy-model',
+        },
+      },
+      'cli-model'
+    );
+
+    expect(model).toBe('legacy-model');
+  });
+
+  it('uses the log sentinel when no explicit model is configured', () => {
+    const model = resolveCliLogModel({
+      defaults: {
+        agent: { model: '' },
+        model: '',
+      },
+    });
+
+    expect(model).toBe(MODEL_DEFAULT_SENTINEL);
+  });
+});
 
 describe('processTaskResults', () => {
   it('marks the run as failed when any report carries an error', () => {

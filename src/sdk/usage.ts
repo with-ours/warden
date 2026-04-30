@@ -1,25 +1,35 @@
-import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { UsageStats, AuxiliaryUsageMap } from '../types/index.js';
 import type { AuxiliaryUsageEntry } from './types.js';
 
+export interface RuntimeUsageResult {
+  usage?: {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+  } | null;
+  total_cost_usd?: number | null;
+}
+
 /**
- * Extract usage stats from an SDK result message.
+ * Extract usage stats from a runtime result message.
  *
  * The Anthropic API reports `input_tokens` as only the non-cached portion.
- * We normalize so that `inputTokens` is the *total* input tokens
- * (non-cached + cache_read + cache_creation), with the cache fields
- * being subsets of that total.
+ * We normalize so that `inputTokens` is the total input token count
+ * (non-cached + cache_read + cache_creation), with cache fields reported
+ * separately as subsets of that total.
  */
-export function extractUsage(result: SDKResultMessage): UsageStats {
-  const rawInput = result.usage['input_tokens'];
-  const cacheRead = result.usage['cache_read_input_tokens'] ?? 0;
-  const cacheCreation = result.usage['cache_creation_input_tokens'] ?? 0;
+export function extractUsage(result: RuntimeUsageResult): UsageStats {
+  const usage = result.usage;
+  const rawInput = usage?.input_tokens ?? 0;
+  const cacheRead = usage?.cache_read_input_tokens ?? 0;
+  const cacheCreation = usage?.cache_creation_input_tokens ?? 0;
   return {
     inputTokens: rawInput + cacheRead + cacheCreation,
-    outputTokens: result.usage['output_tokens'],
+    outputTokens: usage?.output_tokens ?? 0,
     cacheReadInputTokens: cacheRead,
     cacheCreationInputTokens: cacheCreation,
-    costUSD: result.total_cost_usd,
+    costUSD: result.total_cost_usd ?? 0,
   };
 }
 

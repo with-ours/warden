@@ -73,40 +73,34 @@ export function extractJson(text: string): string | null {
     // Fall through to extraction
   }
 
-  // Find first { or [
-  const objStart = stripped.indexOf('{');
-  const arrStart = stripped.indexOf('[');
-  let start: number;
-  if (objStart === -1) {
-    start = arrStart;
-  } else if (arrStart === -1) {
-    start = objStart;
-  } else {
-    start = Math.min(objStart, arrStart);
-  }
-
-  if (start === -1) {
-    return null;
-  }
-
-  // Find each potential closer and try parsing - first valid JSON wins
-  const closer = stripped[start] === '{' ? '}' : ']';
-  let searchFrom = start;
-
-  while (true) {
-    const end = stripped.indexOf(closer, searchFrom + 1);
-    if (end === -1) {
-      return null;
+  // Try every object/array opener. Prefilled JSON calls can produce text like
+  // `{Here is the JSON:\n{"findings":[]}`, where the first opener is an orphan.
+  for (let start = 0; start < stripped.length; start++) {
+    const opener = stripped[start];
+    if (opener !== '{' && opener !== '[') {
+      continue;
     }
 
-    const candidate = stripped.slice(start, end + 1);
-    try {
-      JSON.parse(candidate);
-      return candidate;
-    } catch {
-      searchFrom = end;
+    const closer = opener === '{' ? '}' : ']';
+    let searchFrom = start;
+
+    while (true) {
+      const end = stripped.indexOf(closer, searchFrom + 1);
+      if (end === -1) {
+        break;
+      }
+
+      const candidate = stripped.slice(start, end + 1);
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        searchFrom = end;
+      }
     }
   }
+
+  return null;
 }
 
 /**
@@ -123,6 +117,7 @@ export interface CallHaikuOptions<T> {
   apiKey: string;
   prompt: string;
   schema: z.ZodType<T>;
+  model?: string;
   maxTokens?: number;
   timeout?: number;
   maxRetries?: number;
@@ -144,16 +139,16 @@ function inferPrefill(schema: z.ZodType): string | undefined {
  * Auto-prefills based on Zod schema type, extracts JSON, validates with Zod.
  */
 export async function callHaiku<T>(options: CallHaikuOptions<T>): Promise<HaikuResult<T>> {
-  const { apiKey, prompt, schema, maxTokens = DEFAULT_MAX_TOKENS, timeout = DEFAULT_TIMEOUT_MS, maxRetries = DEFAULT_AUXILIARY_MAX_RETRIES } = options;
+  const { apiKey, prompt, schema, model = HAIKU_MODEL, maxTokens = DEFAULT_MAX_TOKENS, timeout = DEFAULT_TIMEOUT_MS, maxRetries = DEFAULT_AUXILIARY_MAX_RETRIES } = options;
 
   return Sentry.startSpan(
     {
       op: 'gen_ai.chat',
-      name: `chat ${HAIKU_MODEL}`,
+      name: `chat ${model}`,
       attributes: {
         'gen_ai.operation.name': 'chat',
         'gen_ai.provider.name': 'anthropic',
-        'gen_ai.request.model': HAIKU_MODEL,
+        'gen_ai.request.model': model,
         'gen_ai.request.max_tokens': maxTokens,
       },
     },
@@ -172,12 +167,12 @@ export async function callHaiku<T>(options: CallHaikuOptions<T>): Promise<HaikuR
 
       try {
         const response = await client.messages.create({
-          model: HAIKU_MODEL,
+          model,
           max_tokens: maxTokens,
           messages,
         });
 
-        const usage = apiUsageToStats(HAIKU_MODEL, response.usage);
+        const usage = apiUsageToStats(model, response.usage);
 
         const content = response.content[0];
         if (!content || content.type !== 'text') {
@@ -220,6 +215,7 @@ export interface CallHaikuWithToolsOptions<T> {
   schema: z.ZodType<T>;
   tools: Anthropic.Tool[];
   executeTool: (name: string, input: Record<string, unknown>) => Promise<string>;
+  model?: string;
   maxTokens?: number;
   maxIterations?: number;
   timeout?: number;
@@ -238,6 +234,7 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
     schema,
     tools,
     executeTool,
+    model = HAIKU_MODEL,
     maxTokens = DEFAULT_MAX_TOKENS,
     maxIterations = 5,
     timeout = DEFAULT_TIMEOUT_MS,
@@ -247,11 +244,11 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
   return Sentry.startSpan(
     {
       op: 'gen_ai.chat',
-      name: `chat ${HAIKU_MODEL}`,
+      name: `chat ${model}`,
       attributes: {
         'gen_ai.operation.name': 'chat',
         'gen_ai.provider.name': 'anthropic',
-        'gen_ai.request.model': HAIKU_MODEL,
+        'gen_ai.request.model': model,
         'gen_ai.request.max_tokens': maxTokens,
       },
     },
@@ -288,7 +285,7 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
         let response: Anthropic.Message;
         try {
           response = await client.messages.create({
-            model: HAIKU_MODEL,
+            model,
             max_tokens: maxTokens,
             messages,
             tools,
@@ -298,7 +295,7 @@ export async function callHaikuWithTools<T>(options: CallHaikuWithToolsOptions<T
           return { success: false, error: message, usage: currentUsage() };
         }
 
-        usages.push(apiUsageToStats(HAIKU_MODEL, response.usage));
+        usages.push(apiUsageToStats(model, response.usage));
         cumulativeUsage.input_tokens += response.usage.input_tokens;
         cumulativeUsage.output_tokens += response.usage.output_tokens;
         cumulativeUsage.cache_read_input_tokens += response.usage.cache_read_input_tokens ?? 0;

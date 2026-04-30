@@ -3,8 +3,9 @@ import type { Octokit } from '@octokit/rest';
 import { z } from 'zod';
 import type { Finding, UsageStats } from '../types/index.js';
 import { findingLine } from '../types/index.js';
-import { callHaiku } from '../sdk/haiku.js';
+import { getRuntime } from '../sdk/runtimes/index.js';
 import { applyMergeGroups } from '../sdk/extract.js';
+import type { AuxiliaryCallOptions } from '../sdk/extract.js';
 
 /**
  * Parsed marker data from a Warden comment.
@@ -435,7 +436,7 @@ async function findSemanticDuplicates(
   findings: Finding[],
   existingComments: ExistingComment[],
   apiKey: string,
-  maxRetries?: number
+  options: Pick<DeduplicateOptions, 'runtime' | 'model' | 'maxRetries'> = {}
 ): Promise<SemanticDuplicateResult> {
   if (findings.length === 0 || existingComments.length === 0) {
     return { matches: new Map() };
@@ -470,12 +471,14 @@ Return ONLY the JSON array in this format:
 where findingIndex is the 1-based index of the new finding and existingIndex is the 1-based index of the matching existing comment.
 Return [] if none are duplicates.`;
 
-  const result = await callHaiku({
+  const result = await getRuntime(options.runtime).runAuxiliary({
+    task: 'deduplication',
     apiKey,
     prompt,
     schema: DuplicateMatchesSchema,
+    model: options.model,
     maxTokens: 512,
-    maxRetries,
+    maxRetries: options.maxRetries,
   });
 
   if (!result.success) {
@@ -498,15 +501,16 @@ Return [] if none are duplicates.`;
 /**
  * Options for deduplication.
  */
-export interface DeduplicateOptions {
-  /** Anthropic API key for LLM-based semantic deduplication */
-  apiKey?: string;
+export interface DeduplicateOptions extends AuxiliaryCallOptions {
   /** Skip LLM deduplication and only use exact hash matching */
   hashOnly?: boolean;
   /** Current skill name (for updating Warden comment attribution) */
   currentSkill?: string;
-  /** Max retries for auxiliary Haiku calls */
-  maxRetries?: number;
+}
+
+export interface ConsolidateOptions extends AuxiliaryCallOptions {
+  /** Skip LLM consolidation and only use exact hash matching */
+  hashOnly?: boolean;
 }
 
 const ADD_REACTION_MUTATION = `
@@ -698,13 +702,13 @@ function findProximityClusters(findings: Finding[]): Finding[][] {
  *
  * 1. Hash dedup: remove exact duplicates (same path:line:contentHash)
  * 2. Proximity grouping: identify clusters of findings within 5 lines of each other
- * 3. LLM consolidation: ask Haiku to group findings by root cause (only when proximity matches exist)
+ * 3. LLM consolidation: ask the auxiliary runtime to group findings by root cause (only when proximity matches exist)
  *
  * For each group, keeps the highest-severity finding.
  */
 export async function consolidateBatchFindings(
   findings: Finding[],
-  options: { apiKey?: string; hashOnly?: boolean; maxRetries?: number } = {}
+  options: ConsolidateOptions = {}
 ): Promise<ConsolidateResult> {
   if (findings.length <= 1) {
     return { findings, removedCount: 0 };
@@ -761,10 +765,12 @@ Singletons (findings with no duplicates) should not appear in any group.
 
 Return ONLY the JSON array. Return [] if no findings share a root cause.`;
 
-  const result = await callHaiku({
+  const result = await getRuntime(options.runtime).runAuxiliary({
+    task: 'consolidation',
     apiKey: options.apiKey,
     prompt,
     schema: ConsolidationGroupsSchema,
+    model: options.model,
     maxTokens: 512,
     maxRetries: options.maxRetries,
   });
@@ -871,7 +877,7 @@ export async function deduplicateFindings(
   }
 
   // Second pass: LLM semantic comparison for remaining findings
-  const semanticResult = await findSemanticDuplicates(hashDedupedFindings, existingComments, options.apiKey, options.maxRetries);
+  const semanticResult = await findSemanticDuplicates(hashDedupedFindings, existingComments, options.apiKey, options);
 
   if (semanticResult.matches.size > 0) {
     console.log(`Dedup: ${semanticResult.matches.size} findings identified as semantic duplicates by LLM`);

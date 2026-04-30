@@ -12,8 +12,13 @@ import {
   loadLayeredWardenConfig,
   resolveLayeredSkillConfigs,
   ConfigLoadError,
+  emptyToUndefined,
 } from '../../config/loader.js';
-import type { LayeredSkillRootsByName, ResolvedTrigger } from '../../config/loader.js';
+import type {
+  LayeredSkillRootsByName,
+  LoadedLayeredConfig,
+  ResolvedTrigger,
+} from '../../config/loader.js';
 import { buildEventContext } from '../../event/context.js';
 import { matchTrigger, shouldFail, countFindingsAtOrAbove } from '../../triggers/matcher.js';
 import { fetchExistingComments } from '../../output/dedup.js';
@@ -33,6 +38,7 @@ import { executeTrigger } from '../triggers/executor.js';
 import type { TriggerResult } from '../triggers/executor.js';
 import { postTriggerReview } from '../review/poster.js';
 import { shouldResolveStaleComments } from '../review/coordination.js';
+import type { RuntimeName } from '../../sdk/runtimes/index.js';
 import {
   createCoreCheck,
   updateCoreCheck,
@@ -42,6 +48,7 @@ import {
 import {
   setOutput,
   setFailed,
+  ensureClaudeAuth,
   logGroup,
   logGroupEnd,
   findClaudeCodeExecutable,
@@ -60,7 +67,7 @@ import {
 interface InitResult {
   context: EventContext;
   runnerConcurrency?: number;
-  auxiliaryMaxRetries?: number;
+  fastModelOptions: FastModelWorkflowOptions;
   matchedTriggers: ResolvedTrigger[];
 }
 
@@ -76,6 +83,32 @@ interface ReviewPhaseResult {
   activeWardenCommentIds: Set<number>;
   shouldFailAction: boolean;
   failureReasons: string[];
+}
+
+interface FastModelWorkflowOptions {
+  runtime?: RuntimeName;
+  model?: string;
+  maxRetries?: number;
+}
+
+function resolveWorkflowFastModelOptions(layered: LoadedLayeredConfig): FastModelWorkflowOptions {
+  const baseDefaults = layered.baseConfig?.defaults;
+  const repoDefaults = layered.repoConfig?.defaults ?? layered.config.defaults;
+
+  return {
+    // These workflow-scoped auxiliary calls are not tied to an individual
+    // trigger, so the org base config remains the enforced baseline and the
+    // repo layer only fills fields the base omits.
+    runtime: baseDefaults?.runtime ?? repoDefaults?.runtime ?? 'claude',
+    model:
+      emptyToUndefined(baseDefaults?.fastModel?.model) ??
+      emptyToUndefined(repoDefaults?.fastModel?.model),
+    maxRetries:
+      baseDefaults?.fastModel?.maxRetries ??
+      baseDefaults?.auxiliaryMaxRetries ??
+      repoDefaults?.fastModel?.maxRetries ??
+      repoDefaults?.auxiliaryMaxRetries,
+  };
 }
 
 // -----------------------------------------------------------------------------
@@ -146,8 +179,8 @@ async function initializeWorkflow(
   console.log(`Repo config path: ${inputs.configPath}`);
   logGroupEnd();
 
-  let auxiliaryMaxRetries: number | undefined;
   let runnerConcurrency: number | undefined;
+  let fastModelOptions: FastModelWorkflowOptions = { runtime: 'claude' };
   let skillRootsByName: LayeredSkillRootsByName | undefined;
   try {
     const layered = loadLayeredWardenConfig(repoPath, {
@@ -157,12 +190,11 @@ async function initializeWorkflow(
     // The org base config is an enforced baseline. Repo config extends the run
     // with additional repo-local triggers, but does not override these
     // action-level settings for the global workflow.
-    auxiliaryMaxRetries =
-      layered.baseConfig?.defaults?.auxiliaryMaxRetries ??
-      layered.repoConfig?.defaults?.auxiliaryMaxRetries;
     runnerConcurrency =
       layered.baseConfig?.runner?.concurrency ??
-      layered.repoConfig?.runner?.concurrency;
+      layered.repoConfig?.runner?.concurrency ??
+      layered.config.runner?.concurrency;
+    fastModelOptions = resolveWorkflowFastModelOptions(layered);
     skillRootsByName = buildSkillRootsByName(repoPath, layered, inputs.baseSkillRoot);
     const resolvedTriggers = resolveLayeredSkillConfigs(layered, undefined, skillRootsByName);
     const matchedTriggers = resolvedTriggers.filter((t) => matchTrigger(t, context, 'github'));
@@ -177,7 +209,7 @@ async function initializeWorkflow(
       console.log('No triggers matched for this event');
     }
 
-    return { context, runnerConcurrency, auxiliaryMaxRetries, matchedTriggers };
+    return { context, runnerConcurrency, fastModelOptions, matchedTriggers };
   } catch (error) {
     if (
       error instanceof ConfigLoadError &&
@@ -277,7 +309,11 @@ async function executeAllTriggers(
   inputs: ActionInputs
 ): Promise<TriggerResult[]> {
   const concurrency = runnerConcurrency ?? inputs.parallel;
-  const claudePath = await findClaudeCodeExecutable();
+  const usesClaudeRuntime = matchedTriggers.some((trigger) => (trigger.runtime ?? 'claude') === 'claude');
+  if (usesClaudeRuntime) {
+    ensureClaudeAuth(inputs);
+  }
+  const claudePath = usesClaudeRuntime ? await findClaudeCodeExecutable() : undefined;
 
   // Global semaphore gates file-level work across all triggers.
   // All triggers launch immediately; the semaphore limits concurrent file analyses.
@@ -310,7 +346,7 @@ async function postReviewsAndTrackFailures(
   context: EventContext,
   results: TriggerResult[],
   inputs: ActionInputs,
-  auxiliaryMaxRetries?: number
+  fastModelOptions: FastModelWorkflowOptions
 ): Promise<ReviewPhaseResult> {
   // Fetch existing comments for deduplication (only for PRs)
   // Keep original list separate for stale detection (modified list includes newly posted comments)
@@ -354,7 +390,9 @@ async function postReviewsAndTrackFailures(
           result,
           existingComments,
           apiKey: inputs.anthropicApiKey,
-          maxRetries: auxiliaryMaxRetries,
+          runtime: fastModelOptions.runtime,
+          model: fastModelOptions.model,
+          maxRetries: fastModelOptions.maxRetries,
         },
         { octokit, context }
       );
@@ -398,7 +436,7 @@ async function evaluateFixesAndResolveStale(
   activeWardenCommentIds: ReadonlySet<number>,
   canResolveStale: boolean,
   anthropicApiKey: string,
-  auxiliaryMaxRetries?: number
+  fastModelOptions: FastModelWorkflowOptions
 ): Promise<{
   allResolved: boolean;
   autoResolvedByFixEvaluation: number;
@@ -437,7 +475,7 @@ async function evaluateFixesAndResolveStale(
         },
         allFindings,
         anthropicApiKey,
-        auxiliaryMaxRetries
+        fastModelOptions
       );
 
       // Log per-evaluation details
@@ -632,8 +670,8 @@ async function finalizeWorkflow(
 async function cleanupOrphanedComments(
   octokit: Octokit,
   context: EventContext,
-  anthropicApiKey: string,
-  auxiliaryMaxRetries?: number
+  inputs: ActionInputs,
+  fastModelOptions: FastModelWorkflowOptions
 ): Promise<void> {
   if (!context.pullRequest) {
     return;
@@ -657,11 +695,15 @@ async function cleanupOrphanedComments(
     return;
   }
 
+  if ((fastModelOptions.runtime ?? 'claude') === 'claude') {
+    ensureClaudeAuth(inputs);
+  }
+
   logAction(`No triggers matched, but found ${wardenComments.length} existing Warden comments. Running cleanup.`);
 
   const { allResolved, autoResolvedByFixEvaluation, autoResolvedByStaleCheck } =
     await evaluateFixesAndResolveStale(
-      octokit, context, existingComments, [], new Set(), true, anthropicApiKey, auxiliaryMaxRetries
+      octokit, context, existingComments, [], new Set(), true, inputs.anthropicApiKey, fastModelOptions
     );
   const activeSpan = Sentry.getActiveSpan();
   activeSpan?.setAttribute('warden.feedback.auto_resolve.fix_eval_count', autoResolvedByFixEvaluation);
@@ -725,7 +767,7 @@ export async function runPRWorkflow(
         return;
       }
 
-      const { context, runnerConcurrency, auxiliaryMaxRetries, matchedTriggers } = initResult;
+      const { context, runnerConcurrency, fastModelOptions, matchedTriggers } = initResult;
 
       // Set Sentry context after building event context
       if (context.pullRequest) {
@@ -753,7 +795,12 @@ export async function runPRWorkflow(
       });
 
       if (matchedTriggers.length === 0) {
-        await cleanupOrphanedComments(octokit, context, inputs.anthropicApiKey, auxiliaryMaxRetries);
+        await cleanupOrphanedComments(
+          octokit,
+          context,
+          inputs,
+          fastModelOptions
+        );
         setOutput('findings-count', 0);
         setOutput('high-count', 0);
         setOutput('summary', 'No triggers matched');
@@ -773,7 +820,7 @@ export async function runPRWorkflow(
 
       const reviewPhase = await Sentry.startSpan(
         { op: 'workflow.review', name: 'post reviews' },
-        () => postReviewsAndTrackFailures(octokit, context, results, inputs, auxiliaryMaxRetries),
+        () => postReviewsAndTrackFailures(octokit, context, results, inputs, fastModelOptions),
       );
 
       const triggerErrors = collectTriggerErrors(results);
@@ -789,7 +836,7 @@ export async function runPRWorkflow(
             octokit, context, reviewPhase.fetchedComments,
             allFindings, reviewPhase.activeWardenCommentIds,
             canResolveStale, inputs.anthropicApiKey,
-            auxiliaryMaxRetries,
+            fastModelOptions,
           );
           resolveSpan.setAttribute(
             'warden.feedback.auto_resolve.fix_eval_count',

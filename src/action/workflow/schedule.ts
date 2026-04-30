@@ -25,6 +25,7 @@ import {
   setOutput,
   setFailed,
   ActionFailedError,
+  ensureClaudeAuth,
   logGroup,
   logGroupEnd,
   findClaudeCodeExecutable,
@@ -166,10 +167,16 @@ export async function runScheduleWorkflow(
       const skill = await resolveSkillAsync(resolved.skill, resolved.skillRoot ?? repoPath, {
         remote: resolved.remote,
       });
-      const claudePath = await findClaudeCodeExecutable();
+      const usesClaudeRuntime = (resolved.runtime ?? 'claude') === 'claude';
+      if (usesClaudeRuntime) {
+        ensureClaudeAuth(inputs);
+      }
+      const claudePath = usesClaudeRuntime ? await findClaudeCodeExecutable() : undefined;
       const report = await runSkill(skill, context, {
         apiKey: inputs.anthropicApiKey,
         model: resolved.model,
+        runtime: resolved.runtime,
+        fastModelModel: resolved.fastModelModel,
         maxTurns: resolved.maxTurns,
         batchDelayMs: resolved.batchDelayMs,
         maxContextFiles: resolved.maxContextFiles,

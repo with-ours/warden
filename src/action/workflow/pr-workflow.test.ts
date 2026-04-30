@@ -15,6 +15,10 @@ const FIXTURES_DIR = join(__dirname, '__fixtures__');
 const BASE_ONLY_FIXTURES_DIR = join(FIXTURES_DIR, 'base-only');
 const NO_MATCH_FIXTURES_DIR = join(FIXTURES_DIR, 'no-match');
 const NO_CONFIG_FIXTURES_DIR = join(FIXTURES_DIR, 'no-config');
+const RUNTIME_CLAUDE_FIXTURES_DIR = join(FIXTURES_DIR, 'runtime-claude');
+const EMPTY_FAST_MODEL_FIXTURES_DIR = join(FIXTURES_DIR, 'empty-fast-model');
+const LAYERED_FAST_MODEL_FIXTURES_DIR = join(FIXTURES_DIR, 'layered-fast-model');
+const NO_MATCH_EMPTY_FAST_MODEL_FIXTURES_DIR = join(FIXTURES_DIR, 'no-match-empty-fast-model');
 const EVENT_PAYLOAD_PATH = join(FIXTURES_DIR, 'event-payloads/pull_request_opened.json');
 
 // -----------------------------------------------------------------------------
@@ -67,10 +71,20 @@ vi.mock('../fix-evaluation/index.js', () => ({
 // Mock base utilities that call process.exit or need system access
 vi.mock('./base.js', async () => {
   const actual = await vi.importActual('./base.js');
+  const mockedSetFailed = vi.fn((msg: string): never => {
+    throw new Error(`setFailed: ${msg}`);
+  });
   return {
     ...actual,
-    setFailed: vi.fn((msg: string): never => {
-      throw new Error(`setFailed: ${msg}`);
+    setFailed: mockedSetFailed,
+    ensureClaudeAuth: vi.fn((inputs: ActionInputs): void => {
+      if (inputs.anthropicApiKey || inputs.oauthToken) {
+        return;
+      }
+      mockedSetFailed(
+        'Authentication not found. Provide an API key via anthropic-api-key input, ' +
+          'ANTHROPIC_API_KEY env var, or OAuth token via CLAUDE_CODE_OAUTH_TOKEN env var.'
+      );
     }),
     findClaudeCodeExecutable: vi.fn(() => '/usr/local/bin/claude'),
     getAuthenticatedBotLogin: vi.fn(() => Promise.resolve('warden[bot]')),
@@ -309,6 +323,45 @@ describe('runPRWorkflow', () => {
       const createReview = vi.mocked(mockOctokit.pulls.createReview);
       expect(createReview).not.toHaveBeenCalled();
     });
+
+    it('normalizes empty fast-model default before review deduplication', async () => {
+      const finding = createFinding();
+      const report = createSkillReport({ findings: [finding] });
+
+      mockFetchExistingComments.mockResolvedValue([
+        {
+          id: 1,
+          body: 'Existing issue',
+          path: 'src/test.ts',
+          line: 10,
+          isWarden: true,
+          title: 'Different finding',
+          description: 'Existing description',
+          contentHash: 'abc123',
+        },
+      ]);
+      mockDeduplicateFindings.mockResolvedValue({
+        newFindings: [finding],
+        duplicateActions: [],
+      });
+      mockRunSkillTask.mockResolvedValue({ name: 'test-trigger', report });
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        EVENT_PAYLOAD_PATH,
+        EMPTY_FAST_MODEL_FIXTURES_DIR
+      );
+
+      expect(mockDeduplicateFindings).toHaveBeenCalledWith(
+        [finding],
+        expect.any(Array),
+        expect.objectContaining({
+          model: undefined,
+        })
+      );
+    });
   });
 
   describe('trigger execution', () => {
@@ -351,6 +404,23 @@ describe('runPRWorkflow', () => {
   });
 
   describe('failure conditions', () => {
+    it('requires Claude auth when the runtime is Claude', async () => {
+      await expect(
+        runPRWorkflow(
+          mockOctokit,
+          createDefaultInputs({ anthropicApiKey: '', oauthToken: '' }),
+          'pull_request',
+          EVENT_PAYLOAD_PATH,
+          RUNTIME_CLAUDE_FIXTURES_DIR
+        )
+      ).rejects.toThrow('setFailed');
+
+      expect(mockSetFailed).toHaveBeenCalledWith(
+        expect.stringContaining('Authentication not found')
+      );
+      expect(mockRunSkillTask).not.toHaveBeenCalled();
+    });
+
     it('fails when findings exceed fail-on threshold and failCheck is true', async () => {
       const finding = createFinding({ severity: 'high' });
       const report = createSkillReport({ findings: [finding] });
@@ -695,7 +765,54 @@ describe('runPRWorkflow', () => {
         }),
         expect.any(Array),
         'test-api-key',
-        undefined
+        expect.objectContaining({ runtime: 'claude' })
+      );
+    });
+
+    it('keeps base fast-model defaults for workflow-level fix evaluation', async () => {
+      mockFetchExistingComments.mockResolvedValue([
+        {
+          id: 1,
+          path: 'src/test.ts',
+          line: 10,
+          title: 'SQL injection',
+          description: 'User input in query',
+          contentHash: 'abc',
+          isWarden: true,
+          isResolved: false,
+          threadId: 'thread-1',
+        },
+      ]);
+
+      mockRunSkillTask.mockResolvedValue({ name: 'test-trigger', report: createSkillReport() });
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs({
+          baseConfigPath: '.warden-org/warden.toml',
+          baseSkillRoot: '.warden-org',
+        }),
+        'pull_request',
+        EVENT_PAYLOAD_PATH,
+        LAYERED_FAST_MODEL_FIXTURES_DIR
+      );
+
+      expect(mockEvaluateFixAttempts).toHaveBeenCalledWith(
+        mockOctokit,
+        expect.arrayContaining([expect.objectContaining({ isWarden: true })]),
+        expect.objectContaining({
+          owner: 'test-owner',
+          repo: 'test-repo',
+          baseSha: 'base123sha456',
+          headSha: 'abc123def456',
+        }),
+        expect.any(Array),
+        'test-api-key',
+        expect.objectContaining({
+          runtime: 'claude',
+          model: 'org-fast-model',
+          maxRetries: 7,
+        })
       );
     });
 
@@ -758,6 +875,38 @@ describe('runPRWorkflow', () => {
   });
 
   describe('no triggers matched cleanup', () => {
+    it('requires Claude auth before cleanup fix evaluation', async () => {
+      mockFetchExistingComments.mockResolvedValue([
+        {
+          id: 1,
+          path: 'src/old-file.ts',
+          line: 5,
+          title: 'Unused import',
+          description: 'Remove unused import',
+          contentHash: 'hash1',
+          isWarden: true,
+          isResolved: false,
+          threadId: 'thread-1',
+        },
+      ]);
+
+      await expect(
+        runPRWorkflow(
+          mockOctokit,
+          createDefaultInputs({ anthropicApiKey: '', oauthToken: '' }),
+          'pull_request',
+          EVENT_PAYLOAD_PATH,
+          NO_MATCH_FIXTURES_DIR
+        )
+      ).rejects.toThrow('setFailed');
+
+      expect(mockSetFailed).toHaveBeenCalledWith(
+        expect.stringContaining('Authentication not found')
+      );
+      expect(mockEvaluateFixAttempts).not.toHaveBeenCalled();
+      expect(mockRunSkillTask).not.toHaveBeenCalled();
+    });
+
     it('resolves stale comments when no triggers match but Warden comments exist', async () => {
       // PR files are src/test.ts, but no-match fixture has paths: ["docs/**"]
       // so no triggers will match
@@ -795,10 +944,46 @@ describe('runPRWorkflow', () => {
         }),
         [],
         'test-api-key',
-        undefined
+        expect.objectContaining({ runtime: 'claude' })
       );
 
       // Should NOT run skill tasks (no triggers matched)
+      expect(mockRunSkillTask).not.toHaveBeenCalled();
+    });
+
+    it('normalizes empty fast-model default before cleanup fix evaluation', async () => {
+      mockFetchExistingComments.mockResolvedValue([
+        {
+          id: 1,
+          path: 'src/old-file.ts',
+          line: 5,
+          title: 'Unused import',
+          description: 'Remove unused import',
+          contentHash: 'hash1',
+          isWarden: true,
+          isResolved: false,
+          threadId: 'thread-1',
+        },
+      ]);
+
+      await runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs(),
+        'pull_request',
+        EVENT_PAYLOAD_PATH,
+        NO_MATCH_EMPTY_FAST_MODEL_FIXTURES_DIR
+      );
+
+      expect(mockEvaluateFixAttempts).toHaveBeenCalledWith(
+        mockOctokit,
+        expect.any(Array),
+        expect.any(Object),
+        [],
+        'test-api-key',
+        expect.objectContaining({
+          model: undefined,
+        })
+      );
       expect(mockRunSkillTask).not.toHaveBeenCalled();
     });
 
