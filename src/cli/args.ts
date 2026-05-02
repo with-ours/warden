@@ -4,10 +4,12 @@ import { z } from 'zod';
 import { SeverityThresholdSchema, ConfidenceThresholdSchema } from '../types/index.js';
 import type { SeverityThreshold, ConfidenceThreshold } from '../types/index.js';
 import { getVersion } from '../utils/index.js';
+import type { HelpTarget } from './help.js';
 
 export const CLIOptionsSchema = z.object({
   targets: z.array(z.string()).optional(),
   skill: z.string().optional(),
+  cwd: z.string().optional(),
   config: z.string().optional(),
   json: z.boolean().default(false),
   /** Write full run output to a JSONL file */
@@ -18,7 +20,7 @@ export const CLIOptionsSchema = z.object({
   /** Only show findings at or above this confidence in output */
   minConfidence: ConfidenceThresholdSchema.optional(),
   help: z.boolean().default(false),
-  /** Max concurrent trigger/skill executions (default: 4) */
+  /** Max concurrent task or skill executions (default depends on command) */
   parallel: z.number().int().positive().optional(),
   /** Model to use for analysis (fallback when not set in config) */
   model: z.string().optional(),
@@ -45,6 +47,10 @@ export const CLIOptionsSchema = z.object({
   offline: z.boolean().default(false),
   /** Stop after first finding */
   failFast: z.boolean().default(false),
+  /** Regenerate generated skill artifacts even when a cached outline exists */
+  regenerate: z.boolean().default(false),
+  /** Prompt for creating a new generated skill. Prefix with @ to load from a file. */
+  prompt: z.string().optional(),
 });
 
 export type CLIOptions = z.infer<typeof CLIOptionsSchema>;
@@ -67,8 +73,9 @@ export interface RunsOptions {
 }
 
 export interface ParsedArgs {
-  command: 'run' | 'help' | 'init' | 'add' | 'version' | 'setup-app' | 'sync' | 'runs';
+  command: 'run' | 'help' | 'init' | 'add' | 'version' | 'setup-app' | 'sync' | 'runs' | 'build';
   options: CLIOptions;
+  helpTarget?: HelpTarget;
   setupAppOptions?: SetupAppOptions;
   runsOptions?: RunsOptions;
 }
@@ -77,100 +84,76 @@ export function showVersion(): void {
   console.log(`warden ${getVersion()}`);
 }
 
-const HELP_TEXT = `
-Usage: warden [command] [targets...] [options]
+type ParsedOptionValues = ReturnType<typeof parseArgs>['values'];
 
-Analyze code for security issues and code quality.
+function parseCliOptions(rawOptions: Record<string, unknown>): CLIOptions {
+  const result = CLIOptionsSchema.safeParse(rawOptions);
+  if (!result.success) {
+    const issues = result.error.issues.map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`);
+    console.error('Invalid options:');
+    console.error(issues.join('\n'));
+    process.exit(1);
+  }
+  return result.data;
+}
 
-Commands:
-  init                 Initialize warden.toml and GitHub workflow
-  add [skill]          Add a skill trigger to warden.toml
-  sync [remote]        Update cached remote skills to latest
-  setup-app            Create a GitHub App for Warden via manifest flow
-  runs [list]          List saved sessions (default)
-  runs show <files...> Show results from a saved session
-  runs follow [run]    Tail a session live as skills complete
-  runs gc              Remove expired session logs
-  (default)            Run analysis on targets or using warden.toml triggers
+function sharedOptions(values: ParsedOptionValues, verboseCount: number): Partial<CLIOptions> {
+  return {
+    cwd: typeof values['cwd'] === 'string' ? values['cwd'] : undefined,
+    quiet: Boolean(values['quiet']),
+    verbose: verboseCount,
+    debug: Boolean(values['debug']),
+    log: Boolean(values['log']),
+    color: resolveColorOption(values),
+  };
+}
 
-Targets:
-  <files>              Analyze specific files (e.g., src/auth.ts)
-  <glob>               Analyze files matching pattern (e.g., "src/**/*.ts")
-  <git-ref>            Analyze changes from git ref (e.g., HEAD~3, main..feature)
-  (none)               Analyze current branch changes against the default branch
+function resolveHelpTarget(tokens: string[], values: ParsedOptionValues): HelpTarget | undefined {
+  if (tokens.length === 0) {
+    return undefined;
+  }
 
-Options:
-  --skill <name>       Run only this skill (default: run all built-in skills)
-  --config <path>      Path to warden.toml (default: ./warden.toml)
-  -m, --model <model>  Model to use (fallback when not set in config)
-  --json               Output results as JSON
-  -o, --output <path>  Write full run output to a JSONL file
-  --fail-on <severity> Exit with code 1 if findings >= severity
-                       (off, critical, high, medium, low, info)
-  --report-on <sev>    Only show findings >= severity in output
-                       (off, critical, high, medium, low, info)
-  --min-confidence <c> Only show findings >= confidence in output
-                       (off, high, medium, low) Default: medium
-  --fix                Automatically apply all suggested fixes
-  --parallel <n>       Max concurrent trigger/skill executions (default: 4)
-  -x, --fail-fast      Stop after first finding
-  --staged             Analyze only staged changes
-  --git                Force ambiguous targets to be treated as git refs
-  --quiet              Errors and final summary only
-  -v, --verbose        Show real-time findings and hunk details
-  -vv                  Show debug info (token counts, latencies)
-  --debug              Enable debug output (equivalent to -vv)
-  --log                Use log output (no animations, timestamped)
-  --color / --no-color Override color detection
-  --help, -h           Show this help message
-  --version, -V        Show version number
+  const [command, subcommand] = tokens;
+  switch (command) {
+    case 'run':
+      return 'run';
+    case 'init':
+      return 'init';
+    case 'add':
+      return 'add';
+    case 'sync':
+      return 'sync';
+    case 'build':
+      return 'build';
+    case 'setup-app':
+      return 'setup-app';
+    case 'runs':
+      if (subcommand === 'list') return 'runs:list';
+      if (subcommand === 'show') return 'runs:show';
+      if (subcommand === 'follow') return 'runs:follow';
+      if (subcommand === 'gc') return 'runs:gc';
+      if (values['follow']) return 'runs:follow';
+      if (values['all']) return 'runs:list';
+      if (subcommand) return 'runs:show';
+      return 'runs';
+    case 'help':
+    case 'version':
+      return undefined;
+    default:
+      return 'run';
+  }
+}
 
-Init Options:
-  -f, --force          Overwrite existing files
-
-Add Options:
-  --list               List available skills
-  --remote <ref>       Remote repository (owner/repo, URL, or with @sha)
-  --force              Bypass skill cache and fetch latest
-
-Run Options:
-  --offline            Use cached remote skills without network access
-
-Setup-app Options:
-  --org <name>         Create under organization (default: personal)
-  --port <number>      Local server port (default: 3000)
-  --timeout <sec>      Callback timeout in seconds (default: 300)
-  --name <string>      Custom app name (default: Warden)
-  --no-open            Print URL instead of opening browser
-
-Examples:
-  warden init                             # Initialize warden configuration
-  warden add                              # Interactive skill selection
-  warden add security-review              # Add specific skill trigger
-  warden add --list                       # List available skills
-  warden add --remote getsentry/skills --skill security-review
-                                          # Add remote skill trigger
-  warden add --remote https://github.com/getsentry/skills --skill security-review
-                                          # Add remote skill via URL
-  warden add --remote getsentry/skills@abc123 --skill security-review
-                                          # Add pinned remote skill
-  warden                                  # Run triggers from warden.toml
-  warden src/auth.ts                      # Run all skills on file
-  warden src/auth.ts --skill security-review
-                                          # Run specific skill on file
-  warden "src/**/*.ts"                    # Run all skills on glob pattern
-  warden HEAD~3                           # Run all skills on git changes
-  warden HEAD~3 --skill security-review   # Run specific skill on git changes
-  warden --json                           # Output as JSON
-  warden --fail-on high                   # Fail if high+ severity findings
-  warden --offline                        # Use cached skills only
-  warden sync                             # Update all unpinned remote skills
-  warden setup-app                        # Create GitHub App interactively
-  warden setup-app --org myorg            # Create app under organization
-`;
-
-export function showHelp(): void {
-  console.log(HELP_TEXT.trim());
+function parseSetupAppNumber(value: string | undefined, option: '--port' | '--timeout', fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    console.error(`Invalid ${option} value: ${value}`);
+    process.exit(1);
+  }
+  return parsed;
 }
 
 export interface DetectTargetTypeOptions {
@@ -281,6 +264,7 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
   const { values, positionals } = parseArgs({
     args: filteredArgv,
     options: {
+      cwd: { type: 'string', short: 'C' },
       skill: { type: 'string' },
       config: { type: 'string' },
       model: { type: 'string', short: 'm' },
@@ -295,6 +279,8 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
       remote: { type: 'string' },
       offline: { type: 'boolean', default: false },
       'fail-fast': { type: 'boolean', short: 'x', default: false },
+      regenerate: { type: 'boolean', default: false },
+      prompt: { type: 'string', short: 'p' },
       parallel: { type: 'string' },
       git: { type: 'boolean', default: false },
       staged: { type: 'boolean', default: false },
@@ -323,199 +309,157 @@ export function parseCliArgs(argv: string[] = process.argv.slice(2)): ParsedArgs
   if (values.version) {
     return {
       command: 'version',
-      options: CLIOptionsSchema.parse({}),
+      options: parseCliOptions({}),
     };
   }
 
   if (values.help) {
+    const helpTokens = positionals[0] === 'help' ? positionals.slice(1) : positionals;
     return {
       command: 'help',
-      options: CLIOptionsSchema.parse({ help: true }),
+      options: parseCliOptions({ ...sharedOptions(values, verboseCount), help: true }),
+      helpTarget: resolveHelpTarget(helpTokens, values),
     };
   }
 
-  // Filter out known commands from positionals.
-  const commands = ['run', 'help', 'init', 'add', 'version', 'setup-app', 'sync', 'runs'];
-  const targets = positionals.filter((p) => !commands.includes(p));
+  const [command, ...rest] = positionals;
 
-  // Handle explicit help command
-  if (positionals.includes('help')) {
+  if (command === 'help') {
     return {
       command: 'help',
-      options: CLIOptionsSchema.parse({ help: true }),
+      options: parseCliOptions({ ...sharedOptions(values, verboseCount), help: true }),
+      helpTarget: resolveHelpTarget(rest, values),
     };
   }
 
-  // Handle explicit version command
-  if (positionals.includes('version')) {
+  if (command === 'version') {
     return {
       command: 'version',
-      options: CLIOptionsSchema.parse({}),
+      options: parseCliOptions({}),
     };
   }
 
-  // Handle init command
-  if (positionals.includes('init')) {
+  if (command === 'init') {
     return {
       command: 'init',
-      options: CLIOptionsSchema.parse({
-        force: values.force,
-        quiet: values.quiet,
-        color: resolveColorOption(values),
+      options: parseCliOptions({
+        ...sharedOptions(values, verboseCount),
+        force: Boolean(values.force),
       }),
     };
   }
 
-  // Handle add command
-  if (positionals.includes('add')) {
-    // First positional after 'add' is the skill name
-    const addIndex = positionals.indexOf('add');
-    const skillArg = positionals[addIndex + 1];
-
+  if (command === 'add') {
     return {
       command: 'add',
-      options: CLIOptionsSchema.parse({
-        skill: values.skill ?? skillArg,
-        list: values.list,
-        remote: values.remote,
-        force: values.force,
-        quiet: values.quiet,
-        color: resolveColorOption(values),
+      options: parseCliOptions({
+        ...sharedOptions(values, verboseCount),
+        skill: typeof values.skill === 'string' ? values.skill : rest[0],
+        list: Boolean(values.list),
+        remote: typeof values.remote === 'string' ? values.remote : undefined,
+        force: Boolean(values.force),
       }),
     };
   }
 
-  // Handle sync command
-  if (positionals.includes('sync')) {
-    // First positional after 'sync' is the remote to sync, --remote flag takes precedence
-    const syncIndex = positionals.indexOf('sync');
-    const remoteArg = values.remote ?? positionals[syncIndex + 1];
-
+  if (command === 'sync') {
     return {
       command: 'sync',
-      options: CLIOptionsSchema.parse({
-        remote: remoteArg,
-        quiet: values.quiet,
-        color: resolveColorOption(values),
+      options: parseCliOptions({
+        ...sharedOptions(values, verboseCount),
+        remote: typeof values.remote === 'string' ? values.remote : rest[0],
       }),
     };
   }
 
-  // Handle setup-app command
-  if (positionals.includes('setup-app')) {
-    const port = values.port ? parseInt(values.port as string, 10) : 3000;
-    if (Number.isNaN(port)) {
-      console.error(`Invalid --port value: ${values.port}`);
-      process.exit(1);
-    }
-    const timeout = values.timeout ? parseInt(values.timeout as string, 10) : 300;
-    if (Number.isNaN(timeout)) {
-      console.error(`Invalid --timeout value: ${values.timeout}`);
-      process.exit(1);
-    }
+  if (command === 'build') {
+    return {
+      command: 'build',
+      options: parseCliOptions({
+        ...sharedOptions(values, verboseCount),
+        skill: typeof values.skill === 'string' ? values.skill : rest[0],
+        config: typeof values.config === 'string' ? values.config : undefined,
+        model: typeof values.model === 'string' ? values.model : undefined,
+        json: Boolean(values.json),
+        regenerate: Boolean(values.regenerate),
+        prompt: typeof values.prompt === 'string' ? values.prompt : undefined,
+        remote: typeof values.remote === 'string' ? values.remote : undefined,
+        offline: Boolean(values.offline),
+      }),
+    };
+  }
+
+  if (command === 'setup-app') {
     return {
       command: 'setup-app',
-      options: CLIOptionsSchema.parse({
-        quiet: values.quiet,
-        color: resolveColorOption(values),
-      }),
+      options: parseCliOptions(sharedOptions(values, verboseCount)),
       setupAppOptions: {
-        org: values.org as string | undefined,
-        port,
-        timeout,
-        name: values.name as string | undefined,
+        org: typeof values.org === 'string' ? values.org : undefined,
+        port: parseSetupAppNumber(typeof values.port === 'string' ? values.port : undefined, '--port', 3000),
+        timeout: parseSetupAppNumber(typeof values.timeout === 'string' ? values.timeout : undefined, '--timeout', 300),
+        name: typeof values.name === 'string' ? values.name : undefined,
         open: !values['no-open'],
       },
     };
   }
 
-  // Handle the `runs` command group.
-  if (positionals.includes('runs')) {
-    const runsIndex = positionals.indexOf('runs');
-    const subArgs = positionals.slice(runsIndex + 1);
-    const subcommandArg = subArgs[0];
-
+  if (command === 'runs') {
+    const subcommandArg = rest[0];
     let files: string[] = [];
-
-    // Determine subcommand: explicit keyword, --follow flag, or infer 'show'.
     let subcommand: RunsSubcommand;
-    if (
-      subcommandArg === 'list' ||
-      subcommandArg === 'show' ||
-      subcommandArg === 'gc' ||
-      subcommandArg === 'follow'
-    ) {
+
+    if (subcommandArg === 'list' || subcommandArg === 'show' || subcommandArg === 'gc' || subcommandArg === 'follow') {
       subcommand = subcommandArg;
       if (subcommand === 'show' || subcommand === 'follow') {
-        files = subArgs.slice(1);
+        files = rest.slice(1);
       }
     } else if (values.follow) {
-      // `warden runs --follow [runId]` — flag form
       subcommand = 'follow';
-      files = subcommandArg ? subArgs : [];
+      files = subcommandArg ? rest : [];
     } else if (subcommandArg) {
-      // Bare arg (file path or run ID) — infer 'show'
       subcommand = 'show';
-      files = subArgs;
+      files = rest;
     } else {
       subcommand = 'list';
     }
 
     return {
       command: 'runs',
-      options: CLIOptionsSchema.parse({
-        json: values.json,
+      options: parseCliOptions({
+        ...sharedOptions(values, verboseCount),
+        json: Boolean(values.json),
         reportOn: values['report-on'] as SeverityThreshold | undefined,
         minConfidence: values['min-confidence'] as ConfidenceThreshold | undefined,
-        quiet: values.quiet,
-        verbose: verboseCount,
-        debug: values.debug,
-        log: values.log,
-        color: resolveColorOption(values),
       }),
       runsOptions: {
         subcommand,
         files,
-        all: values.all,
+        all: Boolean(values.all),
       },
     };
   }
 
-  const rawOptions = {
-    targets: targets.length > 0 ? targets : undefined,
-    skill: values.skill,
-    config: values.config,
-    model: values.model,
-    json: values.json,
-    output: values.output,
-    failOn: values['fail-on'] as SeverityThreshold | undefined,
-    reportOn: values['report-on'] as SeverityThreshold | undefined,
-    minConfidence: values['min-confidence'] as ConfidenceThreshold | undefined,
-    fix: values.fix,
-    force: values.force,
-    parallel: values.parallel ? parseInt(values.parallel, 10) : undefined,
-    git: values.git,
-    staged: values.staged,
-    log: values.log,
-    offline: values.offline,
-    failFast: values['fail-fast'],
-    help: values.help,
-    quiet: values.quiet,
-    verbose: verboseCount,
-    debug: values.debug,
-    color: resolveColorOption(values),
-  };
-
-  const result = CLIOptionsSchema.safeParse(rawOptions);
-  if (!result.success) {
-    const issues = result.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`);
-    console.error('Invalid options:');
-    console.error(issues.join('\n'));
-    process.exit(1);
-  }
-
+  const targets = command === 'run' ? rest : positionals;
   return {
     command: 'run',
-    options: result.data,
+    options: parseCliOptions({
+      ...sharedOptions(values, verboseCount),
+      targets: targets.length > 0 ? targets : undefined,
+      skill: typeof values.skill === 'string' ? values.skill : undefined,
+      config: typeof values.config === 'string' ? values.config : undefined,
+      model: typeof values.model === 'string' ? values.model : undefined,
+      json: Boolean(values.json),
+      output: typeof values.output === 'string' ? values.output : undefined,
+      failOn: values['fail-on'] as SeverityThreshold | undefined,
+      reportOn: values['report-on'] as SeverityThreshold | undefined,
+      minConfidence: values['min-confidence'] as ConfidenceThreshold | undefined,
+      fix: Boolean(values.fix),
+      force: Boolean(values.force),
+      parallel: typeof values.parallel === 'string' ? parseInt(values.parallel, 10) : undefined,
+      git: Boolean(values.git),
+      staged: Boolean(values.staged),
+      offline: Boolean(values.offline),
+      failFast: Boolean(values['fail-fast']),
+    }),
   };
 }

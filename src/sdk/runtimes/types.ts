@@ -4,7 +4,7 @@
  * Warden's analysis pipeline builds prompts, handles retry policy, parses
  * findings, and aggregates report data. Runtime interfaces are backend
  * capabilities underneath that pipeline. Claude is the only runtime today and
- * exposes both skill execution and auxiliary model tasks.
+ * exposes skill execution, auxiliary model tasks, and synthesis tasks.
  *
  * Runtime implementations are responsible for backend-specific execution
  * details such as model identifiers, stream events, authentication side
@@ -13,6 +13,7 @@
  * hunk parsing, extraction repair, deduplication, fix gates, or reporting.
  */
 import { z } from 'zod';
+import type { ToolConfig } from '../../config/schema.js';
 import type { UsageStats } from '../../types/index.js';
 
 export const RuntimeNameSchema = z.enum(['claude']);
@@ -39,6 +40,7 @@ export interface SkillRunRequest {
   repoPath: string;
   skillName: string;
   options: SkillRunOptions;
+  tools?: ToolConfig;
   /** Provider-specific settings consumed only by the selected runtime adapter. */
   providerOptions?: unknown;
 }
@@ -73,9 +75,12 @@ export interface AuxiliaryTool {
 export type AuxiliaryTask =
   | 'extraction'
   | 'deduplication'
-  | 'consolidation'
   | 'fix_quality'
   | 'fix_evaluation';
+
+export type SynthesisTask =
+  | 'consolidation'
+  | 'skill_build';
 
 export type AuxiliaryRunResult<T> =
   | { success: true; data: T; usage: UsageStats }
@@ -106,8 +111,20 @@ interface AuxiliaryRunRequestWithTools<T> extends AuxiliaryRunRequestBase<T> {
 
 export type AuxiliaryRunRequest<T> = AuxiliaryRunRequestWithoutTools<T> | AuxiliaryRunRequestWithTools<T>;
 
+export interface SynthesisRunRequest<T> {
+  task: SynthesisTask;
+  apiKey?: string;
+  prompt: string;
+  schema: z.ZodType<T>;
+  model?: string;
+  maxTokens?: number;
+  timeout?: number;
+  maxRetries?: number;
+}
+
 export interface Runtime {
   readonly name: RuntimeName;
   runSkill(request: SkillRunRequest): Promise<SkillRunResponse>;
   runAuxiliary<T>(request: AuxiliaryRunRequest<T>): Promise<AuxiliaryRunResult<T>>;
+  runSynthesis<T>(request: SynthesisRunRequest<T>): Promise<AuxiliaryRunResult<T>>;
 }

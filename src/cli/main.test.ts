@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   mergeSkillRunnerOptions,
   processTaskResults,
-  resolveCliDefaultFastModel,
+  resolveInvocationCwd,
+  resolveCliDefaultAuxiliaryModel,
+  resolveCliDefaultSynthesisModel,
   resolveCliDefaultModel,
   resolveCliLogModel,
 } from './main.js';
@@ -25,14 +27,16 @@ describe('mergeSkillRunnerOptions', () => {
         apiKey: 'test-key',
         model: 'global-agent-model',
         runtime: 'claude',
-        fastModelModel: 'global-fast-model',
+        auxiliaryModel: 'global-aux-model',
+        synthesisModel: 'global-synth-model',
         maxTurns: 20,
         auxiliaryMaxRetries: 4,
       },
       {
         model: undefined,
         runtime: undefined,
-        fastModelModel: undefined,
+        auxiliaryModel: undefined,
+        synthesisModel: undefined,
         maxTurns: undefined,
         auxiliaryMaxRetries: undefined,
       }
@@ -42,7 +46,8 @@ describe('mergeSkillRunnerOptions', () => {
       apiKey: 'test-key',
       model: 'global-agent-model',
       runtime: 'claude',
-      fastModelModel: 'global-fast-model',
+      auxiliaryModel: 'global-aux-model',
+      synthesisModel: 'global-synth-model',
       maxTurns: 20,
       auxiliaryMaxRetries: 4,
     });
@@ -54,13 +59,15 @@ describe('mergeSkillRunnerOptions', () => {
         apiKey: 'test-key',
         model: 'global-agent-model',
         runtime: 'claude',
-        fastModelModel: 'global-fast-model',
+        auxiliaryModel: 'global-aux-model',
+        synthesisModel: 'global-synth-model',
         maxTurns: 20,
         auxiliaryMaxRetries: 4,
       },
       {
         model: 'skill-agent-model',
-        fastModelModel: 'skill-fast-model',
+        auxiliaryModel: 'skill-aux-model',
+        synthesisModel: 'skill-synth-model',
         maxTurns: 8,
         auxiliaryMaxRetries: 2,
       }
@@ -70,7 +77,8 @@ describe('mergeSkillRunnerOptions', () => {
       apiKey: 'test-key',
       model: 'skill-agent-model',
       runtime: 'claude',
-      fastModelModel: 'skill-fast-model',
+      auxiliaryModel: 'skill-aux-model',
+      synthesisModel: 'skill-synth-model',
       maxTurns: 8,
       auxiliaryMaxRetries: 2,
     });
@@ -92,14 +100,31 @@ describe('resolveCliDefaultModel', () => {
     expect(model).toBe('cli-model');
   });
 
-  it('normalizes empty fast-model defaults', () => {
-    const model = resolveCliDefaultFastModel({
+  it('normalizes empty auxiliary defaults', () => {
+    const model = resolveCliDefaultAuxiliaryModel({
       defaults: {
-        fastModel: { model: '' },
+        auxiliary: { model: '' },
       },
     });
 
     expect(model).toBeUndefined();
+  });
+
+  it('prefers synthesis defaults and falls back to auxiliary defaults', () => {
+    const explicit = resolveCliDefaultSynthesisModel({
+      defaults: {
+        synthesis: { model: 'synth-model' },
+        auxiliary: { model: 'aux-model' },
+      },
+    });
+    const fallback = resolveCliDefaultSynthesisModel({
+      defaults: {
+        auxiliary: { model: 'aux-model' },
+      },
+    });
+
+    expect(explicit).toBe('synth-model');
+    expect(fallback).toBe('aux-model');
   });
 });
 
@@ -235,5 +260,15 @@ describe('processTaskResults', () => {
 
     expect(processed.reports).toHaveLength(2);
     expect(processed.reports[0]!.error).toBeDefined();
+  });
+});
+
+describe('resolveInvocationCwd', () => {
+  it('uses the current working directory by default', () => {
+    expect(resolveInvocationCwd('/repo', undefined)).toBe('/repo');
+  });
+
+  it('resolves a relative cwd override from the original working directory', () => {
+    expect(resolveInvocationCwd('/launcher', '../repo')).toBe('/repo');
   });
 });

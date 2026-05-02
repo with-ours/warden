@@ -9,6 +9,7 @@
  * rerender() calls from producing duplicate output lines.
  *
  * Reporter spec: specs/reporters.md
+ * Terminal output design guide: specs/terminal-output.md
  */
 
 import React, { useState, useEffect } from 'react';
@@ -173,8 +174,9 @@ function makeTerminalSkillState(
 }
 
 /** No-op callbacks for quiet mode. */
-// eslint-disable-next-line @typescript-eslint/no-empty-function
-const noop = () => {};
+const noop = (): void => {
+  return;
+};
 const noopCallbacks: SkillProgressCallbacks = {
   onSkillStart: noop,
   onSkillUpdate: noop,
@@ -294,6 +296,8 @@ export async function runSkillTasksWithInk(
   // Track interrupt state for rendering in the Ink component
   let interrupted = false;
   let failFastTriggered = false;
+
+  process.stderr.write(`${chalk.bold('SKILLS')}\n`);
 
   // Create Ink instance
   const { rerender, unmount, clear } = render(
@@ -446,7 +450,6 @@ export async function runSkillTasksWithInk(
   clear();
   unmount();
 
-  process.stderr.write(`${chalk.bold('SKILLS')}\n`);
   printSkillSummary(skillStates);
 
   return results;

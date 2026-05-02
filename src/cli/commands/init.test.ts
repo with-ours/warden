@@ -29,6 +29,7 @@ function createOptions(overrides: Partial<CLIOptions> = {}): CLIOptions {
     staged: false,
     offline: false,
     failFast: false,
+    regenerate: false,
     ...overrides,
   };
 }
@@ -121,12 +122,16 @@ describe('init command', () => {
   });
 
   describe('bundled skill installation', () => {
-    it('installs warden and warden-sweep skills with --force', async () => {
+    it('installs bundled skills with --force', async () => {
       const reporter = createMockReporter();
       await runInit(createOptions({ force: true }), reporter);
 
       expect(existsSync(join(tempDir, '.agents', 'skills', 'warden', 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(tempDir, '.agents', 'skills', 'warden', 'SPEC.md'))).toBe(true);
       expect(existsSync(join(tempDir, '.agents', 'skills', 'warden-sweep', 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(tempDir, '.agents', 'skills', 'warden-sweep', 'SPEC.md'))).toBe(true);
+      expect(existsSync(join(tempDir, '.agents', 'skills', 'wrdn-skill-writer', 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(tempDir, '.agents', 'skills', 'wrdn-skill-writer', 'SPEC.md'))).toBe(true);
     });
 
     it('copies warden skill references with --force', async () => {
@@ -156,6 +161,9 @@ describe('init command', () => {
       const sweepDir = join(tempDir, '.agents', 'skills', 'warden-sweep');
       mkdirSync(sweepDir, { recursive: true });
       writeFileSync(join(sweepDir, 'SKILL.md'), 'custom sweep');
+      const writerDir = join(tempDir, '.agents', 'skills', 'wrdn-skill-writer');
+      mkdirSync(writerDir, { recursive: true });
+      writeFileSync(join(writerDir, 'SKILL.md'), 'custom writer');
 
       const reporter = createMockReporter();
       await runInit(createOptions(), reporter);
@@ -186,6 +194,7 @@ describe('init command', () => {
       const toml = readFileSync(join(tempDir, 'warden.toml'), 'utf-8');
       expect(toml).not.toContain('name = "warden"');
       expect(toml).not.toContain('name = "warden-sweep"');
+      expect(toml).not.toContain('name = "wrdn-skill-writer"');
     });
 
     it('skips skills in non-TTY mode without --force', async () => {

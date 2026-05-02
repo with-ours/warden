@@ -119,9 +119,9 @@ describe('direct path resolution', () => {
 describe('SKILL_DIRECTORIES', () => {
   it('contains expected directories in order', () => {
     expect(SKILL_DIRECTORIES).toEqual([
+      '.warden/skills',
       '.agents/skills',
       '.claude/skills',
-      '.warden/skills',
     ]);
   });
 });

@@ -66,6 +66,13 @@ describe('parseCliArgs', () => {
     expect(result.options.config).toBe('./custom.toml');
   });
 
+  it('parses -C/--cwd option', () => {
+    const result = parseCliArgs(['-C', '../other-repo', 'build', 'security-review']);
+    expect(result.command).toBe('build');
+    expect(result.options.cwd).toBe('../other-repo');
+    expect(result.options.skill).toBe('security-review');
+  });
+
   it('parses --json flag', () => {
     const result = parseCliArgs(['--json']);
     expect(result.options.json).toBe(true);
@@ -89,16 +96,36 @@ describe('parseCliArgs', () => {
   it('parses help command', () => {
     const result = parseCliArgs(['help']);
     expect(result.command).toBe('help');
+    expect(result.helpTarget).toBeUndefined();
   });
 
   it('parses --help flag', () => {
     const result = parseCliArgs(['--help']);
     expect(result.command).toBe('help');
+    expect(result.helpTarget).toBeUndefined();
   });
 
   it('parses -h flag', () => {
     const result = parseCliArgs(['-h']);
     expect(result.command).toBe('help');
+  });
+
+  it('resolves command-specific help via --help', () => {
+    const result = parseCliArgs(['build', 'security-review', '--help']);
+    expect(result.command).toBe('help');
+    expect(result.helpTarget).toBe('build');
+  });
+
+  it('resolves explicit help targets', () => {
+    const result = parseCliArgs(['help', 'runs', 'show']);
+    expect(result.command).toBe('help');
+    expect(result.helpTarget).toBe('runs:show');
+  });
+
+  it('treats run targets with --help as run help', () => {
+    const result = parseCliArgs(['src/auth.ts', '--help']);
+    expect(result.command).toBe('help');
+    expect(result.helpTarget).toBe('run');
   });
 
   it('ignores run command for backward compat', () => {
@@ -345,6 +372,41 @@ describe('parseCliArgs', () => {
     expect(result.options.remote).toBe('getsentry/skills');
   });
 
+  it('parses build command with regenerate', () => {
+    const result = parseCliArgs([
+      'build',
+      'security-review',
+      '--regenerate',
+    ]);
+    expect(result.command).toBe('build');
+    expect(result.options.skill).toBe('security-review');
+    expect(result.options.regenerate).toBe(true);
+  });
+
+  it('parses build command with prompt options', () => {
+    const result = parseCliArgs([
+      'build',
+      'security-review',
+      '-p',
+      'Review authz boundaries.',
+    ]);
+    expect(result.command).toBe('build');
+    expect(result.options.skill).toBe('security-review');
+    expect(result.options.prompt).toBe('Review authz boundaries.');
+  });
+
+  it('parses build command with prompt file shorthand', () => {
+    const result = parseCliArgs([
+      'build',
+      'security-review',
+      '--prompt',
+      '@prompts/security.md',
+    ]);
+    expect(result.command).toBe('build');
+    expect(result.options.skill).toBe('security-review');
+    expect(result.options.prompt).toBe('@prompts/security.md');
+  });
+
   it('parses runs list command', () => {
     const result = parseCliArgs(['runs', 'list']);
     expect(result.command).toBe('runs');
@@ -402,6 +464,18 @@ describe('parseCliArgs', () => {
     const result = parseCliArgs(['runs', 'show', 'run.jsonl', '--quiet']);
     expect(result.command).toBe('runs');
     expect(result.options.quiet).toBe(true);
+  });
+
+  it('resolves runs show help for inferred show targets', () => {
+    const result = parseCliArgs(['runs', 'deadbeef', '--help']);
+    expect(result.command).toBe('help');
+    expect(result.helpTarget).toBe('runs:show');
+  });
+
+  it('resolves runs follow help for flag form', () => {
+    const result = parseCliArgs(['runs', '--follow', '--help']);
+    expect(result.command).toBe('help');
+    expect(result.helpTarget).toBe('runs:follow');
   });
 
   it('parses runs list command with --json flag', () => {

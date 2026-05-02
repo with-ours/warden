@@ -3,16 +3,17 @@ import { dirname, join, resolve } from 'node:path';
 import { config as dotenvConfig } from 'dotenv';
 import { Sentry, flushSentry, setGlobalAttributes, emitRunMetric, getTraceId } from '../sentry.js';
 import { emptyToUndefined, loadWardenConfig, resolveSkillConfigs } from '../config/loader.js';
-import type { WardenConfig } from '../config/schema.js';
+import type { SkillDefinition, WardenConfig } from '../config/schema.js';
 import { verifyAuth, type WardenAuthenticationError, type SkillRunnerOptions, type ChunkAnalysisResult } from '../sdk/runner.js';
 import { mapExtractionErrorCode } from '../sdk/errors.js';
 import { mergeAuxiliaryUsage } from '../sdk/usage.js';
-import { resolveSkillAsync } from '../skills/loader.js';
+import { resolveSkillAsync, SkillLoaderError } from '../skills/loader.js';
 import { matchTrigger, filterContextByPaths, shouldFail, countFindingsAtOrAbove } from '../triggers/matcher.js';
-import type { SkillReport, ConfidenceThreshold, SkillError, Finding } from '../types/index.js';
+import type { SkillReport, SeverityThreshold, ConfidenceThreshold, SkillError, Finding } from '../types/index.js';
 import { filterFindings } from '../types/index.js';
 import { DEFAULT_CONCURRENCY, getAnthropicApiKey } from '../utils/index.js';
-import { parseCliArgs, showHelp, showVersion, classifyTargets, type CLIOptions } from './args.js';
+import { parseCliArgs, showVersion, classifyTargets, type CLIOptions } from './args.js';
+import { showHelp } from './help.js';
 import { buildLocalEventContext, buildFileEventContext } from './context.js';
 import { getRepoRoot, getHeadSha, refExists, getDefaultBranch } from './git.js';
 import { renderTerminalReport, filterReports } from './terminal.js';
@@ -50,6 +51,8 @@ import { runAdd } from './commands/add.js';
 import { runSetupApp } from './commands/setup-app.js';
 import { runSync } from './commands/sync.js';
 import { runRuns } from './commands/runs.js';
+import { runBuild } from './commands/build.js';
+import { generatedSkillDefinitionExists } from '../skill-builder/definition.js';
 
 /**
  * Global abort controller for graceful shutdown on SIGINT.
@@ -87,9 +90,6 @@ function loadEnvFiles(dir: string): void {
   }
 }
 
-/**
- * Create a Reporter instance from CLI options.
- */
 function createReporter(options: CLIOptions): Reporter {
   const detected = detectOutputMode(options.color);
   const outputMode = options.log ? { ...detected, isTTY: false } : detected;
@@ -97,9 +97,11 @@ function createReporter(options: CLIOptions): Reporter {
   return new Reporter(outputMode, verbosity);
 }
 
-/**
- * Resolve the config file path based on CLI options and repo root.
- */
+/** Resolve the directory Warden should treat as the invocation root. */
+export function resolveInvocationCwd(baseCwd: string, cliCwd: string | undefined): string {
+  return cliCwd ? resolve(baseCwd, cliCwd) : baseCwd;
+}
+
 function resolveConfigPath(options: CLIOptions, repoPath: string): string {
   const cwd = process.cwd();
   return options.config ? resolve(cwd, options.config) : resolve(repoPath, 'warden.toml');
@@ -470,9 +472,6 @@ function finalizeRunLog(
   return wrote;
 }
 
-/**
- * Result of processing skill task results.
- */
 interface SkillToRun {
   skill: string;
   remote?: string;
@@ -480,8 +479,20 @@ interface SkillToRun {
   model?: string;
   maxTurns?: number;
   runtime?: SkillRunnerOptions['runtime'];
-  fastModelModel?: string;
+  auxiliaryModel?: string;
+  synthesisModel?: string;
   auxiliaryMaxRetries?: number;
+}
+
+export interface RunSkillSpec {
+  name: string;
+  displayName?: string;
+  skill: string;
+  remote?: string;
+  failOn?: SeverityThreshold;
+  minConfidence?: ConfidenceThreshold;
+  context: Awaited<ReturnType<typeof buildLocalEventContext>>;
+  runnerOptions: SkillRunnerOptions;
 }
 
 interface ProcessedResults {
@@ -493,9 +504,10 @@ interface ProcessedResults {
 
 type SkillRunnerOptionOverrides = Pick<
   SkillRunnerOptions,
-  'model' | 'maxTurns' | 'runtime' | 'fastModelModel' | 'auxiliaryMaxRetries'
+  'model' | 'maxTurns' | 'runtime' | 'auxiliaryModel' | 'synthesisModel' | 'auxiliaryMaxRetries'
 >;
 
+/** Apply per-skill runner overrides on top of the shared execution defaults. */
 export function mergeSkillRunnerOptions(
   base: SkillRunnerOptions,
   overrides: SkillRunnerOptionOverrides
@@ -505,7 +517,8 @@ export function mergeSkillRunnerOptions(
   if (overrides.model !== undefined) merged.model = overrides.model;
   if (overrides.maxTurns !== undefined) merged.maxTurns = overrides.maxTurns;
   if (overrides.runtime !== undefined) merged.runtime = overrides.runtime;
-  if (overrides.fastModelModel !== undefined) merged.fastModelModel = overrides.fastModelModel;
+  if (overrides.auxiliaryModel !== undefined) merged.auxiliaryModel = overrides.auxiliaryModel;
+  if (overrides.synthesisModel !== undefined) merged.synthesisModel = overrides.synthesisModel;
   if (overrides.auxiliaryMaxRetries !== undefined) {
     merged.auxiliaryMaxRetries = overrides.auxiliaryMaxRetries;
   }
@@ -513,6 +526,95 @@ export function mergeSkillRunnerOptions(
   return merged;
 }
 
+function renderSkillRunHeader(args: {
+  reporter: Reporter;
+  skill: SkillDefinition;
+  repoPath?: string;
+  runtimeName: string;
+  model?: string;
+}): void {
+  const { reporter, skill, repoPath, runtimeName, model } = args;
+  const source = skill.rootDir && repoPath && skill.rootDir.startsWith(repoPath)
+    ? skill.rootDir.slice(repoPath.length + 1)
+    : skill.rootDir;
+
+  reporter.blank();
+  reporter.text(`  Skill    ${skill.name}`);
+  if (source) {
+    reporter.text(`  Source   ${source}`);
+  }
+  reporter.text(`  Model    ${model ?? 'default'} [${runtimeName}]`);
+  reporter.blank();
+}
+
+async function createDirectSkillTask(args: {
+  spec: RunSkillSpec;
+  repoPath?: string;
+  options: CLIOptions;
+  reporter: Reporter;
+  renderHeader?: boolean;
+}): Promise<SkillTaskOptions> {
+  const { spec, repoPath, options, reporter, renderHeader } = args;
+  let skill: SkillDefinition;
+  try {
+    skill = await resolveSkillAsync(spec.skill, repoPath, {
+      remote: spec.remote,
+      offline: options.offline,
+    });
+  } catch (error) {
+    if (
+      error instanceof SkillLoaderError &&
+      repoPath &&
+      generatedSkillDefinitionExists(repoPath, spec.skill)
+    ) {
+      throw new Error(
+        `Generated skill ${spec.skill} is missing generated artifacts. Run "warden build ${spec.skill}" first.`,
+      );
+    }
+    throw error;
+  }
+  if (renderHeader && !options.json) {
+    renderSkillRunHeader({
+      reporter,
+      skill,
+      repoPath,
+      runtimeName: spec.runnerOptions.runtime ?? 'claude',
+      model: spec.runnerOptions.model,
+    });
+  }
+  return {
+    name: spec.name,
+    displayName: spec.displayName,
+    failOn: spec.failOn,
+    minConfidence: spec.minConfidence,
+    resolveSkill: async () => skill,
+    context: spec.context,
+    runnerOptions: spec.runnerOptions,
+  };
+}
+/** Expand configured skills into runnable direct tasks. */
+export async function createSkillTasks(args: {
+  specs: RunSkillSpec[];
+  repoPath?: string;
+  options: CLIOptions;
+  parallel: number;
+  reporter: Reporter;
+}): Promise<SkillTaskOptions[]> {
+  const tasks: SkillTaskOptions[] = [];
+  const singleDirectSkill = args.specs.length === 1;
+  for (const spec of args.specs) {
+    tasks.push(await createDirectSkillTask({
+      spec,
+      repoPath: args.repoPath,
+      options: args.options,
+      reporter: args.reporter,
+      renderHeader: singleDirectSkill,
+    }));
+  }
+  return tasks;
+}
+
+/** Resolve the default analysis model from config, CLI overrides, or environment. */
 export function resolveCliDefaultModel(
   config: Pick<WardenConfig, 'defaults'> | null | undefined,
   cliModel?: string
@@ -525,12 +627,24 @@ export function resolveCliDefaultModel(
   );
 }
 
-export function resolveCliDefaultFastModel(
+/** Resolve the default auxiliary model used for helper and repair passes. */
+export function resolveCliDefaultAuxiliaryModel(
   config: Pick<WardenConfig, 'defaults'> | null | undefined
 ): string | undefined {
-  return emptyToUndefined(config?.defaults?.fastModel?.model);
+  return emptyToUndefined(config?.defaults?.auxiliary?.model);
 }
 
+/** Resolve the default synthesis model, falling back to the auxiliary lane when unset. */
+export function resolveCliDefaultSynthesisModel(
+  config: Pick<WardenConfig, 'defaults'> | null | undefined
+): string | undefined {
+  return (
+    emptyToUndefined(config?.defaults?.synthesis?.model) ??
+    resolveCliDefaultAuxiliaryModel(config)
+  );
+}
+
+/** Resolve the model label recorded in JSONL output, including the default sentinel. */
 export function resolveCliLogModel(
   config: Pick<WardenConfig, 'defaults'> | null | undefined,
   cliModel?: string
@@ -578,9 +692,6 @@ export function processTaskResults(
   return { reports, filteredReports, hasFailure, failureReasons };
 }
 
-/**
- * Output results and handle fixes. Returns exit code.
- */
 async function outputResultsAndHandleFixes(
   processed: ProcessedResults,
   options: CLIOptions,
@@ -682,11 +793,7 @@ async function outputResultsAndHandleFixes(
   return 0;
 }
 
-/**
- * Run skills on a context and output results.
- * If skillName is provided, runs only that skill.
- * Otherwise, runs skills from matched triggers in warden.toml.
- */
+/** Run one or more skills against an already constructed review context. */
 export async function runSkills(
   context: Awaited<ReturnType<typeof buildLocalEventContext>>,
   options: CLIOptions,
@@ -736,7 +843,8 @@ export async function runSkills(
     ? loadWardenConfig(dirname(configPath))
     : null;
   const defaultModel = resolveCliDefaultModel(config, options.model);
-  const defaultFastModelModel = resolveCliDefaultFastModel(config);
+  const defaultAuxiliaryModel = resolveCliDefaultAuxiliaryModel(config);
+  const defaultSynthesisModel = resolveCliDefaultSynthesisModel(config);
 
   // Determine which triggers/skills to run
   let skillsToRun: SkillToRun[];
@@ -757,8 +865,12 @@ export async function runSkills(
       model: match?.model ?? defaultModel,
       maxTurns: match?.maxTurns ?? config?.defaults?.agent?.maxTurns ?? config?.defaults?.maxTurns,
       runtime: match?.runtime ?? config?.defaults?.runtime ?? 'claude',
-      fastModelModel: match?.fastModelModel ?? defaultFastModelModel,
-      auxiliaryMaxRetries: match?.auxiliaryMaxRetries ?? config?.defaults?.fastModel?.maxRetries ?? config?.defaults?.auxiliaryMaxRetries,
+      auxiliaryModel: match?.auxiliaryModel ?? defaultAuxiliaryModel,
+      synthesisModel: match?.synthesisModel ?? defaultSynthesisModel,
+      auxiliaryMaxRetries:
+        match?.auxiliaryMaxRetries ??
+        config?.defaults?.auxiliary?.maxRetries ??
+        config?.defaults?.auxiliaryMaxRetries,
     }];
   } else if (config) {
     // Get skills from matched triggers, preserving remote property and filters
@@ -779,7 +891,8 @@ export async function runSkills(
         model: t.model,
         maxTurns: t.maxTurns,
         runtime: t.runtime,
-        fastModelModel: t.fastModelModel,
+        auxiliaryModel: t.auxiliaryModel,
+        synthesisModel: t.synthesisModel,
         auxiliaryMaxRetries: t.auxiliaryMaxRetries,
       }));
   } else {
@@ -810,23 +923,44 @@ export async function runSkills(
     apiKey,
     model: sdkModel,
     runtime: config?.defaults?.runtime ?? 'claude',
-    fastModelModel: defaultFastModelModel,
+    auxiliaryModel: defaultAuxiliaryModel,
+    synthesisModel: defaultSynthesisModel,
     abortController,
     maxTurns: config?.defaults?.agent?.maxTurns ?? config?.defaults?.maxTurns,
     batchDelayMs: config?.defaults?.batchDelayMs,
     maxContextFiles: config?.defaults?.chunking?.maxContextFiles,
-    auxiliaryMaxRetries: config?.defaults?.fastModel?.maxRetries ?? config?.defaults?.auxiliaryMaxRetries,
+    auxiliaryMaxRetries:
+      config?.defaults?.auxiliary?.maxRetries ??
+      config?.defaults?.auxiliaryMaxRetries,
   };
-  const tasks: SkillTaskOptions[] = skillsToRun.map(({ skill, remote, filters, ...skillOptions }) => ({
+  const specs: RunSkillSpec[] = skillsToRun.map(({ skill, remote, filters, ...skillOptions }) => ({
     name: skill,
+    skill,
+    remote,
     failOn: options.failOn,
-    resolveSkill: () => resolveSkillAsync(skill, repoPath, {
-      remote,
-      offline: options.offline,
-    }),
     context: filterContextByPaths(context, filters),
     runnerOptions: mergeSkillRunnerOptions(runnerOptions, skillOptions),
   }));
+  let tasks: SkillTaskOptions[];
+  const concurrency = options.parallel ?? DEFAULT_CONCURRENCY;
+  try {
+    tasks = await createSkillTasks({
+      specs,
+      repoPath,
+      options,
+      parallel: concurrency,
+      reporter,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    reporter.error(message);
+    emitEmptyRunLog(repoPath ?? cwd, options, {
+      code: 'unknown',
+      message,
+      timestamp: new Date().toISOString(),
+    });
+    return 1;
+  }
 
   // Open the run's JSONL log before launching skills so `warden runs
   // follow <runId>` works from a second terminal while the run is live.
@@ -852,7 +986,6 @@ export async function runSkills(
   });
 
   // Run skills with Ink UI (TTY) or simple console output (non-TTY)
-  const concurrency = options.parallel ?? DEFAULT_CONCURRENCY;
   failFastController = options.failFast ? new AbortController() : undefined;
   const taskOptions = {
     mode: reporter.mode,
@@ -873,9 +1006,6 @@ export async function runSkills(
   return outputResultsAndHandleFixes(processed, options, reporter, runLog, totalDuration, failFastController?.signal.aborted);
 }
 
-/**
- * Run in file mode: analyze specific files.
- */
 async function runFileMode(filePatterns: string[], options: CLIOptions, reporter: Reporter): Promise<number> {
   const cwd = process.cwd();
 
@@ -925,9 +1055,6 @@ function parseGitRef(ref: string): { base: string; head: string } {
   return { base: ref, head: 'HEAD' };
 }
 
-/**
- * Run in git ref mode: analyze changes from a git ref.
- */
 async function runGitRefMode(gitRef: string, options: CLIOptions, reporter: Reporter): Promise<number> {
   const cwd = process.cwd();
   let repoPath: string;
@@ -987,9 +1114,6 @@ async function runGitRefMode(gitRef: string, options: CLIOptions, reporter: Repo
   return runSkills(context, options, reporter);
 }
 
-/**
- * Run in config mode: use warden.toml triggers.
- */
 async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<number> {
   const cwd = process.cwd();
   let repoPath: string;
@@ -1118,27 +1242,46 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
 
   // Build trigger tasks
   const effectiveMinConfidence = options.minConfidence ?? config.defaults?.minConfidence ?? 'medium';
-  const tasks: SkillTaskOptions[] = triggersToRun.map((trigger) => ({
+  const specs: RunSkillSpec[] = triggersToRun.map((trigger) => ({
     name: trigger.name,
     displayName: trigger.skill,
+    skill: trigger.skill,
+    remote: trigger.remote,
     failOn: trigger.failOn ?? options.failOn,
     minConfidence: trigger.minConfidence ?? effectiveMinConfidence,
-    resolveSkill: () => resolveSkillAsync(trigger.skill, repoPath, {
-      remote: trigger.remote,
-      offline: options.offline,
-    }),
     context: filterContextByPaths(context, trigger.filters),
     runnerOptions: {
       apiKey,
       model: trigger.model,
       runtime: trigger.runtime,
-      fastModelModel: trigger.fastModelModel,
+      auxiliaryModel: trigger.auxiliaryModel,
+      synthesisModel: trigger.synthesisModel,
       abortController,
       maxTurns: trigger.maxTurns,
       maxContextFiles: config.defaults?.chunking?.maxContextFiles,
       auxiliaryMaxRetries: trigger.auxiliaryMaxRetries,
     },
   }));
+  let tasks: SkillTaskOptions[];
+  const concurrency = options.parallel ?? config.runner?.concurrency ?? DEFAULT_CONCURRENCY;
+  try {
+    tasks = await createSkillTasks({
+      specs,
+      repoPath,
+      options,
+      parallel: concurrency,
+      reporter,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    reporter.error(message);
+    emitEmptyRunLog(repoPath, options, {
+      code: 'unknown',
+      message,
+      timestamp: new Date().toISOString(),
+    });
+    return 1;
+  }
 
   // Initialize the run's JSONL log up front so a second terminal can
   // `warden runs follow <runId>` while skills are still running.
@@ -1168,7 +1311,6 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
   });
 
   // Run triggers with Ink UI (TTY) or simple console output (non-TTY)
-  const concurrency = options.parallel ?? config.runner?.concurrency ?? DEFAULT_CONCURRENCY;
   failFastController = options.failFast ? new AbortController() : undefined;
   const taskOptions = {
     mode: reporter.mode,
@@ -1188,10 +1330,6 @@ async function runConfigMode(options: CLIOptions, reporter: Reporter): Promise<n
   return outputResultsAndHandleFixes(processed, options, reporter, runLog, totalDuration, failFastController?.signal.aborted);
 }
 
-/**
- * Run in direct skill mode: run a specific skill on current branch changes.
- * Used when --skill is specified without targets.
- */
 async function runDirectSkillMode(options: CLIOptions, reporter: Reporter): Promise<number> {
   const cwd = process.cwd();
   let repoPath: string;
@@ -1295,17 +1433,32 @@ async function runCommand(options: CLIOptions, reporter: Reporter): Promise<numb
   return runFileMode(filePatterns, options, reporter);
 }
 
+/** Parse CLI input, dispatch the selected command, and perform shutdown cleanup. */
 export async function main(): Promise<void> {
-  const { command, options, setupAppOptions, runsOptions } = parseCliArgs();
+  const { command, options, helpTarget, setupAppOptions, runsOptions } = parseCliArgs();
 
   if (command === 'help') {
-    showHelp();
+    showHelp(helpTarget);
     process.exit(0);
   }
 
   if (command === 'version') {
     showVersion();
     process.exit(0);
+  }
+
+  const reporter = createReporter(options);
+  const originalCwd = process.cwd();
+  const invocationCwd = resolveInvocationCwd(originalCwd, options.cwd);
+  if (invocationCwd !== originalCwd) {
+    try {
+      process.chdir(invocationCwd);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reporter.error(`Unable to change to ${invocationCwd}: ${message}`);
+      process.exit(1);
+      return;
+    }
   }
 
   // Load environment variables from .env files at CLI entry point.
@@ -1318,9 +1471,6 @@ export async function main(): Promise<void> {
     // Not in a git repo - use cwd
   }
   loadEnvFiles(envDir);
-
-  // Create reporter based on options
-  const reporter = createReporter(options);
 
   // Show header (unless JSON output or quiet)
   if (!options.json) {
@@ -1356,6 +1506,8 @@ export async function main(): Promise<void> {
             process.exit(1);
           }
           return runRuns(runsOptions, options, reporter);
+        case 'build':
+          return runBuild(options, reporter, { abortController, interrupted });
         default:
           return runCommand(options, reporter);
       }

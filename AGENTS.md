@@ -16,7 +16,7 @@ Example: `Co-Authored-By: Claude Sonnet 4 <noreply@anthropic.com>`
 
 ## Architecture
 
-This is a pnpm workspace monorepo. Shared build tools (eslint, lint-staged, simple-git-hooks, typescript, vitest) live in the root `package.json`.
+This is a pnpm workspace monorepo. Shared build tools (oxlint, lint-staged, simple-git-hooks, typescript, vitest) live in the root `package.json`.
 
 ```
 packages/
@@ -84,6 +84,15 @@ All of `dist/` is gitignored. The ncc action bundle (`dist/action/`) is built an
 ```bash
 pnpm lint && pnpm build && pnpm test
 ```
+
+## Policies
+
+Repo-wide defaults live under `policies/`.
+
+- `policies/code-comments.md`:
+  Exported functions need brief JSDoc.
+  Comments explain non-obvious intent, invariants, or tradeoffs.
+  Remove stale or obvious comments when behavior changes.
 
 ## Task Management
 
