@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { dirname, join } from 'node:path';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import {
   parseRemoteRef,
@@ -12,10 +13,12 @@ import {
   saveState,
   getCacheTtlSeconds,
   shouldRefresh,
+  fetchRemote,
   discoverRemoteSkills,
   discoverRemoteAgents,
   resolveRemoteSkill,
   resolveRemoteAgent,
+  GitError,
   type RemoteState,
 } from './remote.js';
 import { SkillLoaderError } from './loader.js';
@@ -73,12 +76,12 @@ describe('parseRemoteRef', () => {
 
   it('throws for missing owner', () => {
     expect(() => parseRemoteRef('/repo')).toThrow(SkillLoaderError);
-    expect(() => parseRemoteRef('/repo')).toThrow('empty owner or repo');
+    expect(() => parseRemoteRef('/repo')).toThrow('expected owner/repo format');
   });
 
   it('throws for missing repo', () => {
     expect(() => parseRemoteRef('owner/')).toThrow(SkillLoaderError);
-    expect(() => parseRemoteRef('owner/')).toThrow('empty owner or repo');
+    expect(() => parseRemoteRef('owner/')).toThrow('expected owner/repo format');
   });
 
   it('throws for missing slash', () => {
@@ -202,6 +205,65 @@ describe('parseRemoteRef', () => {
     });
   });
 
+  describe('GitLab sources', () => {
+    it('parses GitLab HTTPS URL with single-level path', () => {
+      const result = parseRemoteRef('https://gitlab.com/getsentry/skills');
+      expect(result).toEqual({
+        owner: 'getsentry',
+        repo: 'skills',
+        sha: undefined,
+        cloneUrl: 'https://gitlab.com/getsentry/skills',
+      });
+    });
+
+    it('parses GitLab HTTPS URL with nested groups', () => {
+      const result = parseRemoteRef('https://gitlab.com/group/subgroup/skills');
+      expect(result).toEqual({
+        owner: 'group/subgroup',
+        repo: 'skills',
+        sha: undefined,
+        cloneUrl: 'https://gitlab.com/group/subgroup/skills',
+      });
+    });
+
+    it('parses GitLab HTTPS URL with .git and SHA', () => {
+      const result = parseRemoteRef('https://gitlab.com/group/skills.git@abc123');
+      expect(result).toEqual({
+        owner: 'group',
+        repo: 'skills',
+        sha: 'abc123',
+        cloneUrl: 'https://gitlab.com/group/skills.git',
+      });
+    });
+
+    it('parses GitLab SSH URL', () => {
+      const result = parseRemoteRef('git@gitlab.com:group/skills.git');
+      expect(result).toEqual({
+        owner: 'group',
+        repo: 'skills',
+        sha: undefined,
+        cloneUrl: 'git@gitlab.com:group/skills.git',
+      });
+    });
+
+    it('rejects GitLab nested-group with dash-prefixed segment (flag injection)', () => {
+      expect(() => parseRemoteRef('https://gitlab.com/-evil/sub/repo')).toThrow(SkillLoaderError);
+    });
+  });
+
+  describe('rejected source types', () => {
+    it('rejects path: prefix with --path guidance', () => {
+      expect(() => parseRemoteRef('path:./local/skill')).toThrow(SkillLoaderError);
+      expect(() => parseRemoteRef('path:./local/skill')).toThrow('use --path for local sources');
+    });
+
+    it('rejects bare HTTPS URLs not matching a known git host (well-known)', () => {
+      expect(() => parseRemoteRef('https://cli.sentry.dev/skills')).toThrow(SkillLoaderError);
+      expect(() => parseRemoteRef('https://cli.sentry.dev/skills')).toThrow(
+        'well-known HTTPS sources are not supported',
+      );
+    });
+  });
 });
 
 describe('formatRemoteRef', () => {
@@ -265,6 +327,14 @@ describe('getRemotePath', () => {
   it('returns path for pinned ref', () => {
     const result = getRemotePath('getsentry/skills@abc123');
     expect(result).toBe('/test/state/skills/getsentry/skills@abc123');
+  });
+
+  it('different URL forms of the same unpinned ref share a path', () => {
+    const a = getRemotePath('getsentry/skills');
+    const b = getRemotePath('https://github.com/getsentry/skills');
+    const c = getRemotePath('git@github.com:getsentry/skills.git');
+    expect(a).toBe(b);
+    expect(a).toBe(c);
   });
 });
 
@@ -920,5 +990,250 @@ describe('resolveRemoteAgent', () => {
       .rejects.toThrow("Agent 'nonexistent' not found");
     await expect(resolveRemoteAgent('test/agents', 'nonexistent', { offline: true }))
       .rejects.toThrow('Available agents: existing-agent');
+  });
+});
+
+describe('fetchRemote integration (real git)', () => {
+  let testRoot: string;
+  let bareRepoPath: string;
+  let workTree: string;
+  const originalEnv = process.env['WARDEN_STATE_DIR'];
+
+  function git(args: string[], cwd: string): string {
+    return execFileSync('git', args, {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_SYSTEM: '/dev/null',
+        GIT_AUTHOR_NAME: 'Test',
+        GIT_AUTHOR_EMAIL: 'test@example.com',
+        GIT_COMMITTER_NAME: 'Test',
+        GIT_COMMITTER_EMAIL: 'test@example.com',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().trim();
+  }
+
+  function commitSkill(name: string, description: string, message: string): string {
+    writeFileSync(join(workTree, 'SKILL.md'), skillMd(name, description));
+    git(['add', '.'], workTree);
+    git(['commit', '-m', message], workTree);
+    return git(['rev-parse', 'HEAD'], workTree);
+  }
+
+  beforeEach(() => {
+    testRoot = join(tmpdir(), `warden-fetch-int-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(testRoot, { recursive: true });
+    process.env['WARDEN_STATE_DIR'] = testRoot;
+
+    workTree = join(testRoot, '_workTree');
+    mkdirSync(workTree, { recursive: true });
+    git(['init', '--initial-branch=main'], workTree);
+    git(['config', 'user.email', 'test@example.com'], workTree);
+    git(['config', 'user.name', 'Test'], workTree);
+    commitSkill('integ-skill', 'Initial', 'initial');
+
+    bareRepoPath = join(testRoot, '_bareRepo.git');
+    execFileSync('git', ['clone', '--bare', workTree, bareRepoPath], { stdio: 'ignore' });
+    git(['remote', 'add', 'bare', bareRepoPath], workTree);
+    git(['push', 'bare', 'main'], workTree);
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env['WARDEN_STATE_DIR'];
+    } else {
+      process.env['WARDEN_STATE_DIR'] = originalEnv;
+    }
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  function preCloneIntoCache(ref: string): void {
+    const cachePath = getRemotePath(ref);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    execFileSync('git', ['clone', '--depth=1', bareRepoPath, cachePath], { stdio: 'ignore' });
+  }
+
+  it('clones a fresh repo from cloneUrl when cache is empty', async () => {
+    const ref = 'fixture/integ';
+    saveState({
+      remotes: {
+        [ref]: {
+          sha: 'unused-placeholder',
+          fetchedAt: new Date().toISOString(),
+          cloneUrl: bareRepoPath,
+        },
+      },
+    });
+    rmSync(getRemotePath(ref), { recursive: true, force: true });
+
+    const sha = await fetchRemote(ref);
+
+    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(getRemotePath(ref)).toBe(join(testRoot, 'skills', 'fixture', 'integ'));
+    expect(readFileSync(join(getRemotePath(ref), 'SKILL.md'), 'utf-8')).toContain('integ-skill');
+    const state = loadState();
+    expect(state.remotes[ref]?.sha).toBe(sha);
+    expect(state.remotes[ref]?.fetchedAt).toBeTruthy();
+  });
+
+  it('clones a pinned ref into the @sha cache directory', async () => {
+    const headSha = git(['rev-parse', 'HEAD'], workTree);
+    const pinnedRef = `fixture/integ@${headSha}`;
+    saveState({
+      remotes: {
+        [pinnedRef]: {
+          sha: 'unused-placeholder',
+          fetchedAt: new Date().toISOString(),
+          cloneUrl: bareRepoPath,
+        },
+      },
+    });
+    rmSync(getRemotePath(pinnedRef), { recursive: true, force: true });
+
+    const sha = await fetchRemote(pinnedRef);
+
+    expect(sha).toBe(headSha);
+    expect(getRemotePath(pinnedRef)).toBe(join(testRoot, 'skills', 'fixture', `integ@${headSha}`));
+    expect(readFileSync(join(getRemotePath(pinnedRef), 'SKILL.md'), 'utf-8')).toContain('integ-skill');
+  });
+
+  it('fetches latest commits when TTL is stale and ref is unpinned', async () => {
+    const ref = 'fixture/integ';
+    preCloneIntoCache(ref);
+
+    const beforeSha = git(['rev-parse', 'HEAD'], getRemotePath(ref));
+    const newSha = commitSkill('integ-skill', 'Updated', 'second');
+    git(['push', 'bare', 'main'], workTree);
+    expect(newSha).not.toBe(beforeSha);
+
+    const stale = new Date(Date.now() - 86400_000 * 7).toISOString();
+    saveState({ remotes: { [ref]: { sha: beforeSha, fetchedAt: stale } } });
+
+    const fetchedSha = await fetchRemote(ref);
+
+    expect(fetchedSha).toBe(newSha);
+    expect(git(['rev-parse', 'HEAD'], getRemotePath(ref))).toBe(newSha);
+    const updated = loadState().remotes[ref];
+    expect(updated?.sha).toBe(newSha);
+    expect(updated?.fetchedAt).not.toBe(stale);
+  });
+
+  it('skips network fetch for unpinned ref while TTL is still fresh', async () => {
+    const ref = 'fixture/integ';
+    preCloneIntoCache(ref);
+    const beforeSha = git(['rev-parse', 'HEAD'], getRemotePath(ref));
+
+    saveState({ remotes: { [ref]: { sha: beforeSha, fetchedAt: new Date().toISOString() } } });
+
+    // Push upstream — TTL is fresh, so this commit must NOT be pulled.
+    commitSkill('integ-skill', 'Should not appear', 'newer');
+    git(['push', 'bare', 'main'], workTree);
+
+    const result = await fetchRemote(ref);
+
+    expect(result).toBe(beforeSha);
+    expect(git(['rev-parse', 'HEAD'], getRemotePath(ref))).toBe(beforeSha);
+  });
+
+  it('force=true bypasses TTL gate and re-fetches an unpinned ref', async () => {
+    const ref = 'fixture/integ';
+    preCloneIntoCache(ref);
+    const beforeSha = git(['rev-parse', 'HEAD'], getRemotePath(ref));
+
+    saveState({ remotes: { [ref]: { sha: beforeSha, fetchedAt: new Date().toISOString() } } });
+
+    const newSha = commitSkill('integ-skill', 'Force', 'force-update');
+    git(['push', 'bare', 'main'], workTree);
+
+    const result = await fetchRemote(ref, { force: true });
+
+    expect(result).toBe(newSha);
+    expect(git(['rev-parse', 'HEAD'], getRemotePath(ref))).toBe(newSha);
+  });
+
+  it('uses pinned cache without touching the network when state entry exists', async () => {
+    const headSha = git(['rev-parse', 'HEAD'], workTree);
+    const pinnedRef = `fixture/integ@${headSha}`;
+    const pinnedCachePath = getRemotePath(pinnedRef);
+    mkdirSync(dirname(pinnedCachePath), { recursive: true });
+    execFileSync('git', ['clone', '--depth=1', bareRepoPath, pinnedCachePath], { stdio: 'ignore' });
+    saveState({
+      remotes: { [pinnedRef]: { sha: headSha, fetchedAt: new Date().toISOString() } },
+    });
+
+    // Push upstream — pinned ref is immutable, must not be influenced.
+    commitSkill('integ-skill', 'Should not be visible', 'newer');
+    git(['push', 'bare', 'main'], workTree);
+
+    const result = await fetchRemote(pinnedRef);
+
+    expect(result).toBe(headSha);
+    expect(git(['rev-parse', 'HEAD'], pinnedCachePath)).toBe(headSha);
+  });
+
+  it('preserves cloneUrl across multiple fetch calls', async () => {
+    // Stand-in for SSH-form persistence: warden must not silently fall back
+    // to https://github.com/... when the user originally specified a
+    // non-default URL.
+    const ref = 'fixture/integ';
+    saveState({
+      remotes: {
+        [ref]: {
+          sha: 'placeholder',
+          fetchedAt: new Date(0).toISOString(),
+          cloneUrl: bareRepoPath,
+        },
+      },
+    });
+    rmSync(getRemotePath(ref), { recursive: true, force: true });
+
+    await fetchRemote(ref);
+    await fetchRemote(ref);
+
+    const state = loadState();
+    expect(state.remotes[ref]?.cloneUrl).toBe(bareRepoPath);
+    expect(state.remotes[ref]?.fetchedAt).toBeTruthy();
+  });
+
+  it('offline mode reads cache without invoking git', async () => {
+    const ref = 'fixture/integ';
+    preCloneIntoCache(ref);
+    const headSha = git(['rev-parse', 'HEAD'], getRemotePath(ref));
+    saveState({ remotes: { [ref]: { sha: headSha, fetchedAt: new Date().toISOString() } } });
+
+    commitSkill('integ-skill', 'Should not appear', 'upstream');
+    git(['push', 'bare', 'main'], workTree);
+
+    const result = await fetchRemote(ref, { offline: true });
+
+    expect(result).toBe(headSha);
+    expect(git(['rev-parse', 'HEAD'], getRemotePath(ref))).toBe(headSha);
+  });
+
+  it('offline mode throws SkillLoaderError when cache is missing', async () => {
+    await expect(fetchRemote('fixture/missing', { offline: true })).rejects.toThrow(SkillLoaderError);
+    await expect(fetchRemote('fixture/missing', { offline: true })).rejects.toThrow('Remote skill not cached');
+  });
+});
+
+describe('GitError contract', () => {
+  // Pins the lib's error shape the CLI auth-hint depends on. If lib renames
+  // a field or removes the `auth-required` kind, this fails loudly.
+  it('exposes the structural fields the CLI depends on', () => {
+    const auth = new GitError('auth required', {
+      kind: 'auth-required',
+      url: 'https://github.com/owner/repo.git',
+      sshUrl: 'git@github.com:owner/repo.git',
+    });
+    expect(auth).toBeInstanceOf(Error);
+    expect(auth.details?.kind).toBe('auth-required');
+    expect(auth.details?.sshUrl).toBe('git@github.com:owner/repo.git');
+
+    const other = new GitError('clone failed', { kind: 'other', stderr: 'fatal: repository not found' });
+    expect(other.details?.kind).toBe('other');
+    expect(other.details?.stderr).toContain('repository not found');
   });
 });

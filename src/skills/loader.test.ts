@@ -357,7 +357,46 @@ Content here
 
       expect(warnings.length).toBe(1);
       expect(warnings[0]).toContain('bad-skill.md');
-      expect(warnings[0]).toContain("missing 'name'");
+      // Lib's message: "Missing 'name' in SKILL.md frontmatter: <path>"
+      expect(warnings[0]).toMatch(/[Mm]issing 'name'/);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadSkillsFromDirectory silently skips .md files without frontmatter', async () => {
+    // Files like README.md, CONTRIBUTING.md often live alongside skills.
+    // They have no `---` block; we must NOT warn about them, only about
+    // files with malformed frontmatter.
+    const warnings: string[] = [];
+    const onWarning = (message: string) => warnings.push(message);
+
+    const tempDir = join(import.meta.dirname, '.test-readme-skip');
+    try {
+      mkdirSync(tempDir, { recursive: true });
+      writeFileSync(
+        join(tempDir, 'README.md'),
+        `# Skills
+
+This directory holds skill definitions. See the docs for details.
+`,
+      );
+      writeFileSync(
+        join(tempDir, 'good-skill.md'),
+        `---
+name: good-skill
+description: A real skill
+---
+Content.
+`,
+      );
+
+      clearSkillsCache();
+      const skills = await loadSkillsFromDirectory(tempDir, { onWarning });
+
+      expect(skills.size).toBe(1);
+      expect(skills.get('good-skill')).toBeDefined();
+      expect(warnings).toEqual([]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -391,12 +430,12 @@ Test prompt content.
       expect(skill).toBeDefined();
       expect(skill!.skill.tools?.allowed).toEqual(['Read', 'Grep']);
 
-      // Should have warnings for each invalid tool
+      // Should have warnings for each invalid tool. Lib emits one warning
+      // per unknown token; the two-tokens-flagged contract is preserved.
       expect(warnings.length).toBe(2);
-      expect(warnings[0]).toContain("Invalid tool name 'InvalidTool'");
+      expect(warnings[0]).toContain('InvalidTool');
       expect(warnings[0]).toContain('ignored');
-      expect(warnings[0]).toContain('Valid tools:');
-      expect(warnings[1]).toContain("Invalid tool name 'FakeTool'");
+      expect(warnings[1]).toContain('FakeTool');
     } finally {
       rmSync(tempDir2, { recursive: true, force: true });
     }
