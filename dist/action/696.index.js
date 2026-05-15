@@ -8079,6 +8079,21 @@ function captureActionTriggerError(error, context) {
 
 /** Log-mode output for CI: no TTY, no color. */
 const CI_OUTPUT_MODE = { isTTY: false, supportsColor: false, columns: 120 };
+function logFailureDiagnostics(report) {
+    if (!report.error) {
+        return;
+    }
+    console.error(`::warning::${report.skill} failure diagnostics: ` +
+        `code=${report.error.code}; message=${report.error.message}`);
+    const firstHunkFailure = report.hunkFailures?.[0];
+    if (!firstHunkFailure) {
+        return;
+    }
+    const location = `${firstHunkFailure.filename}:${firstHunkFailure.lineRange ?? 'unknown'}`;
+    console.error(`::warning::${report.skill} first hunk failure: ` +
+        `type=${firstHunkFailure.type}; code=${firstHunkFailure.code ?? 'none'}; ` +
+        `location=${location}; message=${firstHunkFailure.message}`);
+}
 // -----------------------------------------------------------------------------
 // Executor
 // -----------------------------------------------------------------------------
@@ -8159,6 +8174,7 @@ async function executeTrigger(trigger, deps) {
             // the ErrorCode in the fallback so Sentry / failSkillCheck see a
             // typed error.
             if (report.error) {
+                logFailureDiagnostics(report);
                 throw (result.error ??
                     new errors/* SkillRunnerError */.cy(report.error.message, { code: report.error.code }));
             }

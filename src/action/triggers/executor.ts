@@ -34,6 +34,30 @@ import { captureActionTriggerError } from '../error-reporting.js';
 /** Log-mode output for CI: no TTY, no color. */
 const CI_OUTPUT_MODE: OutputMode = { isTTY: false, supportsColor: false, columns: 120 };
 
+function logFailureDiagnostics(report: SkillReport): void {
+  if (!report.error) {
+    return;
+  }
+
+  console.error(
+    `::warning::${report.skill} failure diagnostics: ` +
+      `code=${report.error.code}; message=${report.error.message}`
+  );
+
+  const firstHunkFailure = report.hunkFailures?.[0];
+  if (!firstHunkFailure) {
+    return;
+  }
+
+  const location =
+    `${firstHunkFailure.filename}:${firstHunkFailure.lineRange ?? 'unknown'}`;
+  console.error(
+    `::warning::${report.skill} first hunk failure: ` +
+      `type=${firstHunkFailure.type}; code=${firstHunkFailure.code ?? 'none'}; ` +
+      `location=${location}; message=${firstHunkFailure.message}`
+  );
+}
+
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
@@ -175,6 +199,7 @@ export async function executeTrigger(
         // the ErrorCode in the fallback so Sentry / failSkillCheck see a
         // typed error.
         if (report.error) {
+          logFailureDiagnostics(report);
           throw (
             result.error ??
             new SkillRunnerError(report.error.message, { code: report.error.code })

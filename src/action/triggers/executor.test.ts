@@ -309,6 +309,15 @@ const mockContext: EventContext = {
       summary: 'test-skill: failed (all_hunks_failed)',
       findings: [],
       error: { code: 'all_hunks_failed' as const, message: 'All 2 chunks failed to analyze.' },
+      hunkFailures: [
+        {
+          type: 'analysis' as const,
+          code: 'provider_unavailable' as const,
+          filename: '.github/workflows/warden-review.yml',
+          lineRange: '1-42',
+          message: 'Runtime execution failed: Invocation of model failed.',
+        },
+      ],
     };
     vi.mocked(runSkillTask).mockResolvedValue({
       name: 'test-trigger',
@@ -323,6 +332,15 @@ const mockContext: EventContext = {
     expect(result.error).toBeDefined();
     expect(result.report).toBeUndefined();
     expect(failSkillCheck).toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(
+      '::warning::test-skill failure diagnostics: code=all_hunks_failed; message=All 2 chunks failed to analyze.'
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      '::warning::test-skill first hunk failure: ' +
+        'type=analysis; code=provider_unavailable; ' +
+        'location=.github/workflows/warden-review.yml:1-42; ' +
+        'message=Runtime execution failed: Invocation of model failed.'
+    );
   });
 
   it('continues if check creation fails', async () => {
