@@ -1062,10 +1062,10 @@ function buildWebSocketHeaders(initHeaders, additionalHeaders, accountId, token,
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
 
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   M7: () => (/* binding */ clampReasoning),
 /* harmony export */   QP: () => (/* binding */ buildBaseOptions),
 /* harmony export */   xw: () => (/* binding */ adjustMaxTokensForThinking)
 /* harmony export */ });
-/* unused harmony export clampReasoning */
 function buildBaseOptions(model, options, apiKey) {
     return {
         temperature: options?.temperature,

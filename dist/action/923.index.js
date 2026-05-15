@@ -4326,7 +4326,7 @@ class Gaxios {
      * @returns A proxy agent
      */
     static async #getProxyAgent() {
-        this.#proxyAgent ||= (await __webpack_require__.e(/* import() */ 475).then(__webpack_require__.t.bind(__webpack_require__, 31475, 23))).HttpsProxyAgent;
+        this.#proxyAgent ||= (await Promise.all(/* import() */[__webpack_require__.e(263), __webpack_require__.e(475)]).then(__webpack_require__.t.bind(__webpack_require__, 31475, 23))).HttpsProxyAgent;
         return this.#proxyAgent;
     }
     static async #getFetch() {
@@ -20635,10 +20635,10 @@ function mapStopReasonString(reason) {
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
 
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   M7: () => (/* binding */ clampReasoning),
 /* harmony export */   QP: () => (/* binding */ buildBaseOptions),
 /* harmony export */   xw: () => (/* binding */ adjustMaxTokensForThinking)
 /* harmony export */ });
-/* unused harmony export clampReasoning */
 function buildBaseOptions(model, options, apiKey) {
     return {
         temperature: options?.temperature,

@@ -8,7 +8,7 @@ __nccwpck_require__.a(module, async (__webpack_handle_async_dependencies__, __we
 /* harmony import */ var _pi_ncc_compat_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(94796);
 
 await (0,_pi_ncc_compat_js__WEBPACK_IMPORTED_MODULE_0__/* .preloadPiRuntimeForActionBundle */ .A)();
-await Promise.all(/* import() */[__nccwpck_require__.e(726), __nccwpck_require__.e(651), __nccwpck_require__.e(530), __nccwpck_require__.e(696)]).then(__nccwpck_require__.bind(__nccwpck_require__, 50696));
+await Promise.all(/* import() */[__nccwpck_require__.e(186), __nccwpck_require__.e(263), __nccwpck_require__.e(605), __nccwpck_require__.e(2), __nccwpck_require__.e(397), __nccwpck_require__.e(651), __nccwpck_require__.e(530), __nccwpck_require__.e(696)]).then(__nccwpck_require__.bind(__nccwpck_require__, 50696));
 
 __webpack_async_result__();
 } catch(e) { __webpack_async_result__(e); } }, 1);
@@ -23,6 +23,8 @@ __webpack_async_result__();
 __nccwpck_require__.d(__webpack_exports__, {
   A: () => (/* binding */ preloadPiRuntimeForActionBundle)
 });
+
+// UNUSED EXPORTS: preloadPiBedrockProviderForActionBundle
 
 ;// CONCATENATED MODULE: external "node:timers/promises"
 const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:timers/promises");
@@ -39,11 +41,18 @@ function isNccPiBuiltinImportFailure(reason) {
         reason.code === 'MODULE_NOT_FOUND' &&
         NCC_PI_BUILTIN_IMPORT_ERRORS.has(reason.message));
 }
+async function preloadPiBedrockProviderForActionBundle(importRegisterBuiltins = () => Promise.all(/* import() */[__nccwpck_require__.e(186), __nccwpck_require__.e(605), __nccwpck_require__.e(118)]).then(__nccwpck_require__.bind(__nccwpck_require__, 67605)), importBedrockProvider = () => Promise.all(/* import() */[__nccwpck_require__.e(186), __nccwpck_require__.e(623)]).then(__nccwpck_require__.bind(__nccwpck_require__, 49623))) {
+    const [{ setBedrockProviderModule }, { bedrockProviderModule }] = await Promise.all([
+        importRegisterBuiltins(),
+        importBedrockProvider(),
+    ]);
+    setBedrockProviderModule(bedrockProviderModule);
+}
 /**
  * Preload Pi before action initialization so ncc's dynamic-import rewrite for
  * Pi's env-key helper cannot terminate the bundled GitHub Action.
  */
-async function preloadPiRuntimeForActionBundle(importPiRuntime = () => Promise.all(/* import() */[__nccwpck_require__.e(726), __nccwpck_require__.e(530)]).then(__nccwpck_require__.bind(__nccwpck_require__, 31460)), unhandledRejections = process) {
+async function preloadPiRuntimeForActionBundle(importPiRuntime = () => Promise.all(/* import() */[__nccwpck_require__.e(186), __nccwpck_require__.e(263), __nccwpck_require__.e(605), __nccwpck_require__.e(2), __nccwpck_require__.e(397), __nccwpck_require__.e(530)]).then(__nccwpck_require__.bind(__nccwpck_require__, 31460)), unhandledRejections = process, preloadBedrockProvider = () => preloadPiBedrockProviderForActionBundle()) {
     let unexpectedRejection;
     const onUnhandledRejection = (reason) => {
         if (isNccPiBuiltinImportFailure(reason)) {
@@ -53,7 +62,7 @@ async function preloadPiRuntimeForActionBundle(importPiRuntime = () => Promise.a
     };
     unhandledRejections.prependListener('unhandledRejection', onUnhandledRejection);
     try {
-        await importPiRuntime();
+        await Promise.all([importPiRuntime(), preloadBedrockProvider()]);
         // ncc emits the synthetic missing-builtin rejections after Pi module
         // evaluation, so drain two turns before removing the temporary listener.
         await (0,promises_namespaceObject.setImmediate)();
@@ -119,6 +128,13 @@ module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("diagnostics_
 
 /***/ }),
 
+/***/ 72250:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("dns");
+
+/***/ }),
+
 /***/ 24434:
 /***/ ((module) => {
 
@@ -175,6 +191,13 @@ module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:assert"
 
 /***/ }),
 
+/***/ 16698:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:async_hooks");
+
+/***/ }),
+
 /***/ 4573:
 /***/ ((module) => {
 
@@ -228,6 +251,13 @@ module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/prom
 /***/ ((module) => {
 
 module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:http");
+
+/***/ }),
+
+/***/ 32467:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:http2");
 
 /***/ }),
 

@@ -1,5 +1,5 @@
 export const id = 530;
-export const ids = [530];
+export const ids = [530,118];
 export const modules = {
 
 /***/ 55738:
