@@ -8766,6 +8766,7 @@ async function setupGitHubState(octokit, context) {
  */
 async function executeAllTriggers(matchedTriggers, octokit, context, runnerConcurrency, inputs) {
     const concurrency = runnerConcurrency ?? inputs.parallel;
+    const triggerConcurrency = Math.min(concurrency, matchedTriggers.length);
     const usesClaudeRuntime = matchedTriggers.some((trigger) => (trigger.runtime ?? 'pi') === 'claude');
     if (usesClaudeRuntime) {
         ensureClaudeAuth(inputs);
@@ -8776,7 +8777,7 @@ async function executeAllTriggers(matchedTriggers, octokit, context, runnerConcu
     const semaphore = new utils/* Semaphore */.jf(concurrency);
     const abortController = new AbortController();
     const circuitBreaker = new circuit_breaker_ProviderFailureCircuitBreaker({ abortController });
-    return (0,utils/* runPool */.kD)(matchedTriggers, matchedTriggers.length, (trigger) => executeTrigger(trigger, {
+    return (0,utils/* runPool */.kD)(matchedTriggers, triggerConcurrency, (trigger) => executeTrigger(trigger, {
         octokit,
         context,
         anthropicApiKey: inputs.anthropicApiKey,

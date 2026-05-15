@@ -313,6 +313,7 @@ async function executeAllTriggers(
   inputs: ActionInputs
 ): Promise<TriggerResult[]> {
   const concurrency = runnerConcurrency ?? inputs.parallel;
+  const triggerConcurrency = Math.min(concurrency, matchedTriggers.length);
   const usesClaudeRuntime = matchedTriggers.some((trigger) => (trigger.runtime ?? 'pi') === 'claude');
   if (usesClaudeRuntime) {
     ensureClaudeAuth(inputs);
@@ -327,7 +328,7 @@ async function executeAllTriggers(
 
   return runPool(
     matchedTriggers,
-    matchedTriggers.length,
+    triggerConcurrency,
     (trigger) =>
       executeTrigger(trigger, {
         octokit,

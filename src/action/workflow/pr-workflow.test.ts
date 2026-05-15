@@ -402,6 +402,51 @@ describe('runPRWorkflow', () => {
       const updateCheck = vi.mocked(mockOctokit.checks.update);
       expect(updateCheck).toHaveBeenCalled();
     });
+
+    it('honors the configured trigger concurrency limit', async () => {
+      let resolveFirstTrigger: ((value: { name: string; report: SkillReport }) => void) | undefined;
+
+      mockRunSkillTask
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFirstTrigger = resolve;
+            })
+        )
+        .mockResolvedValueOnce({
+          name: 'repo-skill',
+          report: createSkillReport({ skill: 'test-skill' }),
+        });
+
+      const workflowPromise = runPRWorkflow(
+        mockOctokit,
+        createDefaultInputs({
+          parallel: 1,
+          baseConfigPath: '.warden-org/warden.toml',
+          baseSkillRoot: '.warden-org',
+        }),
+        'pull_request',
+        EVENT_PAYLOAD_PATH,
+        FIXTURES_DIR
+      );
+
+      await vi.waitFor(() => {
+        expect(mockRunSkillTask).toHaveBeenCalledTimes(1);
+      });
+
+      resolveFirstTrigger?.({
+        name: 'org-skill',
+        report: createSkillReport({ skill: 'org-skill' }),
+      });
+
+      await workflowPromise;
+
+      expect(mockRunSkillTask).toHaveBeenCalledTimes(2);
+      expect(mockRunSkillTask.mock.calls.map(([taskOptions]) => taskOptions.displayName)).toEqual([
+        'org-skill',
+        'test-skill',
+      ]);
+    });
   });
 
   describe('failure conditions', () => {
